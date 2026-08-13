@@ -18,7 +18,7 @@ import EntryDetailPanel from "./EntryDetailPanel";
  * has finished. That keeps the whole thing effect-free and ref-free (the strict
  * react-hooks rules reject both a setState-in-effect and a ref read at render).
  *
- * One panel, not one per card: 44 entries cost one Drawer, not 44 hidden ones.
+ * One panel, not one per card: the whole catalog costs one Drawer, not one hidden per entry.
  * The catalog arrives fully shaped from the Server Component; this never fetches
  * and never filters by role — visibility was already decided by RLS upstream.
  */

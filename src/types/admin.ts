@@ -40,14 +40,14 @@ export type Grant = {
 export type ToggleTarget = { entryId: string } | { categoryId: string };
 
 // The functions that operate on these shapes live in src/lib/adminAccess.ts —
-// this module is types only, so `src/lib/` stays the single place CLAUDE.md's
+// this module is types only, so `src/lib/` stays the single place the
 // "run the tests after touching it" rule has to name.
 
 // ---------------------------------------------------------------------------
 // User types (basecamp.member_types / members / type_grants)
 // ---------------------------------------------------------------------------
 
-/** A Basecamp-owned user type. NOT a an external role table role. */
+/** A user type owned by this schema. NOT a role from an external role table. */
 export type MemberType = {
   id: string;
   slug: string;
@@ -115,7 +115,7 @@ export type NavGroup = "marketing" | "sales" | "deal_sourcing" | "operations" | 
  * handoff — it was added 2026-08-05 (the maintainer) when a new app got a live URL,
  * ahead of government-grant work landing in that app. It sits after Sales
  * because sourcing precedes selling; the enum in
- * 20260805100000_add_deal_sourcing_nav_group.sql declares the same position, so
+ * the enum in 0001_baseline.sql declares the same position, so
  * this array and `order by nav_group` cannot disagree.
  *
  * This is the render order, not the source of truth for which groups exist —

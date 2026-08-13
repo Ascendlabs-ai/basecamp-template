@@ -58,18 +58,24 @@ Full provisioning instructions, including the first-administrator step, are in
 
 ## Rebranding
 
-Three places, by design:
+Four places, by design:
 
 | What | Where |
 |---|---|
 | Product name, org name, home heading, tagline | `src/lib/brand.ts` |
 | The logo mark | `src/components/Logo.tsx` (a neutral placeholder — swap the inline SVG, or render your own asset) |
 | Colours, type, the dark sidebar | `src/theme/theme.ts` |
+| Browser/app icons | `src/app/icon.png`, `src/app/apple-icon.png`, `public/favicon-*.png` — neutral placeholders, replace with your own |
 
 `src/lib/logoUsage.test.ts` enforces that the brand stays in those files: any
-component that hardcodes the product name, or reaches for a logo asset directly,
-fails the suite. That guard exists because in the app this was extracted from,
-two surfaces had each inlined their own logo and pinned themselves to light mode.
+file under `src/` that hardcodes the product name, or reaches for a logo asset
+directly, fails the suite. That guard exists because in the app this was
+extracted from, two surfaces had each inlined their own logo and pinned
+themselves to light mode.
+
+The colour caveat: `theme.ts` holds the palette, but a few focus-ring literals
+sit outside it. Grep `src/theme/theme.ts` for raw hex before assuming a palette
+edit covered everything.
 
 ## Commands
 
@@ -86,6 +92,15 @@ Tests are Node's built-in runner with type stripping — **Node 22.6 or newer**.
 They cover the pure logic: access resolution, catalog shaping, redirect safety,
 and the brand guard. They do not need a database.
 
+**Nothing here tests the database**, which is where 100% of the access
+enforcement lives. What you get instead is `0002_security_boundary.sql`, which
+asserts the boundary at apply time and refuses to commit if ownership, RLS,
+definer hardening, the trust root's privileges, its two guards, or view safety
+are wrong. That is a real check, but it runs once. There is no shipped suite
+that proves your policies DENY correctly for a non-admin — verify that by hand
+after install (sign in as a user with no grants; you should see an empty
+catalog, not an error).
+
 ## Stack
 
 Next.js App Router (React Compiler enabled), React 19, TypeScript, MUI 7 with
@@ -95,6 +110,8 @@ environment variables and no other configuration.
 ## What is deliberately not here
 
 - **No seed data.** The catalog starts empty; the schema is the deliverable.
+  `supabase/seed.example.sql` is a worked example you can run and then delete —
+  it is not applied for you.
 - **No self-signup.** Accounts are issued by an administrator. The sign-in page
   says so.
 - **No invite flow.** Adding a user today means creating the account in the

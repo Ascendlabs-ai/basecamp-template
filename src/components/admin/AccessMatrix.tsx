@@ -256,7 +256,7 @@ export default function AccessMatrix({
                       // matrix stops fitting on screen — which defeats the
                       // reason columns are limited to launchable entries in the
                       // first place. Rotating keeps the whole name readable at
-                      // that width. Recorded in Design/README-HANDOFF.md as an
+                      // that width. A deliberate design choice, kept as an
                       // open deviation.
                       transformOrigin: "left bottom", transform: "rotate(-60deg)",
                       whiteSpace: "nowrap", fontSize: 11, fontWeight: 600,

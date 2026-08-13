@@ -20,7 +20,7 @@ export const dynamic = "force-dynamic";
  *
  * This replaces category-driven nav. The earlier version grouped by
  * `basecamp.categories` because no column backed the design's
- * Marketing / Sales / Operations / External — `20260730101000_add_nav_group.sql`
+ * Marketing / Sales / Operations / External — the `nav_group` column
  * added one, so the sidebar now matches the handoff instead of approximating it.
  *
  * Only LAUNCHABLE entries with a `nav_group` appear. Everything else — the
@@ -93,7 +93,7 @@ export default async function ShellLayout({ children }: { children: React.ReactN
       // Everything in the sidebar is a separate deployment on its own origin,
       // so every one of these leaves the shell. The design marks the External
       // group specifically; the rest still open in a new tab because losing
-      // Basecamp to navigate to another app is the thing the shell exists to
+      // the catalog to navigate to another app is the thing the shell exists to
       // prevent.
       external: true,
     }));
@@ -106,7 +106,7 @@ export default async function ShellLayout({ children }: { children: React.ReactN
   // this returns.
   if (roleError) {
     // Fails closed (canAdmin stays false, the Admin row hides) which is the
-    // right direction — but silently. an administrator losing the Admin link with no line
+    // right direction — but silently. An administrator losing the Admin link with no line
     // anywhere is undiagnosable, and the categories query above already logs.
     console.error("[basecamp] is_super_admin RPC failed:", roleError.code, roleError.message);
   }

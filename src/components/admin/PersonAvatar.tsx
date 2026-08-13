@@ -5,7 +5,7 @@ import { initialsFromEmail } from "@/lib/adminAccess";
 /**
  * Initials disc for a person.
  *
- * There is no a profiles table on this Supabase project and `list_people()` returns
+ * There is no profiles table on this Supabase project and `list_people()` returns
  * only id and email, so initials come from the email local-part. That is the
  * whole identity this app has — inventing display names would be fabricating
  * data the database does not hold.

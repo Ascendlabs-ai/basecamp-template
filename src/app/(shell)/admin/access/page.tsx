@@ -46,7 +46,7 @@ export const metadata = {
  * in TypeScript. If someone later loosens a policy, this screen starts working,
  * which is the honest outcome; it cannot be "fixed" by editing app code.
  *
- * `member_types` is read under the same rule after 20260730120000: a
+ * `member_types` is read under the same rule: a
  * non-super_admin sees only the one type they hold, so the app can label their
  * own identity block and nothing more. It was briefly `using (true)`, which
  * handed the type list to every customer of every other app on the project.

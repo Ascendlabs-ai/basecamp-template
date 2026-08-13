@@ -12,13 +12,6 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
-    // The design handoff is committed as SOURCE MATERIAL, not as code — see
-    // Design/README-HANDOFF.md. `support.js` is the prototype's own runtime
-    // (React 17-era ReactDOM.render, `module` assignment) and the .dc.html is a
-    // non-functional mockup. Neither is built, imported, or shipped; linting
-    // them reports on a third-party artifact we must not edit, because its
-    // value is being a faithful copy of what was handed over.
-    "Design/**",
   ]),
 ]);
 

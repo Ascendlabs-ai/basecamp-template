@@ -8,7 +8,7 @@ import type { CatalogCategory } from "@/types/catalog";
  * viewer can see but whose entries they cannot renders as a bare heading —
  * i.e. whether a grant on an empty category discloses that category's name and
  * description. The database half of that invariant is asserted and
- * mutation-tested in supabase/tests/; welded inside an async Server Component
+ * enforced by the read policies; welded inside an async Server Component
  * the app half could not be tested at all.
  *
  * Deliberately NOT the query. The query belongs in the page: `createClient()`
@@ -43,7 +43,7 @@ export function visibleCategories(rows: CatalogCategory[] | null | undefined): {
  * the URL columns — those are long, and matching them produces hits whose
  * reason is invisible on the card face.
  *
- * Case-insensitive substring, not fuzzy: this runs over 44 rows against a
+ * Case-insensitive substring, not fuzzy: this runs over a modest number of rows against a
  * string the user is still typing, and a fuzzy matcher's false positives would
  * cost more than its recall gains.
  */

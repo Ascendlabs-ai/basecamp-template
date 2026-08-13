@@ -24,7 +24,7 @@ import {
 /**
  * These functions decide what the admin screens SHOW. They do not decide
  * access — the RLS policies do, via `basecamp.has_grant`, and it is probed against the live
- * database in supabase/tests/. What is tested here is that the UI's picture
+ * database by the RLS policies. What is tested here is that the UI's picture
  * agrees with the database's rule, because a cell that renders "off" for a
  * grant that actually exists is how an admin revokes something twice, or
  * believes they revoked something they did not.

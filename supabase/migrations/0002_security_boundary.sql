@@ -1,8 +1,8 @@
 -- Basecamp template — the security boundary the generated baseline cannot carry
 --
--- HAND-WRITTEN, and one of only two files in this directory that is. It is on
--- the §6 diff allowlist for exactly that reason: the equivalence check between
--- the migrations lineage and the template set must expect this file to differ.
+-- HAND-WRITTEN — the only file here that is. Apply it immediately after
+-- 0001_baseline.sql, which is a generated pg_dump squash: this file restores
+-- what that dump cannot carry.
 --
 -- WHY IT EXISTS. `0001_baseline.sql` is produced by `pg_dump --schema-only
 -- --no-owner`. `--no-owner` is necessary — a client project's roles are not
@@ -40,6 +40,14 @@ begin
   for obj in
     select 'table' as kind, format('%I.%I', schemaname, tablename) as ident
       from pg_tables where schemaname = 'basecamp'
+    union all
+    -- Views too. A view added later is the easiest way to defeat every policy
+    -- in this schema: since PG15 a view without security_invoker runs with its
+    -- OWNER's rights, and the SQL Editor creates objects as postgres — so an
+    -- ordinary-looking read model reads straight past RLS. Sweeping only
+    -- pg_tables would leave that unowned and unasserted.
+    select 'view', format('%I.%I', schemaname, viewname)
+      from pg_views where schemaname = 'basecamp'
     union all
     select 'function', format('%I.%I(%s)', ns.nspname, p.proname, pg_get_function_identity_arguments(p.oid))
       from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
@@ -138,10 +146,54 @@ begin
     raise exception 'authenticated cannot SELECT basecamp.entries — the catalog would never render';
   end if;
 
-  raise notice 'security boundary asserted: owners pinned, definers hardened, anon shut out, app role able to reach the schema';
+  -- ---------------------------------------------------------------------
+  -- The trust root's own privileges. Asserted because the README's central
+  -- claim is "authenticated is granted SELECT only" and nothing checked it:
+  -- granting authenticated insert/update/delete on super_admins used to leave
+  -- this file printing "boundary asserted" and committing clean.
+  --
+  -- UPDATE matters as much as DELETE here. There is no UPDATE policy and no
+  -- BEFORE UPDATE trigger, so a single `update super_admins set user_id = …`
+  -- reassigns the roster without changing the row count — which means the
+  -- last-row guard never fires. It is a cheaper hijack than TRUNCATE.
+  -- ---------------------------------------------------------------------
+  if has_table_privilege('authenticated', 'basecamp.super_admins', 'insert')
+     or has_table_privilege('authenticated', 'basecamp.super_admins', 'update')
+     or has_table_privilege('authenticated', 'basecamp.super_admins', 'delete')
+     or has_table_privilege('authenticated', 'basecamp.super_admins', 'truncate') then
+    raise exception 'authenticated holds a WRITE privilege on the trust root basecamp.super_admins';
+  end if;
+  if has_table_privilege('service_role', 'basecamp.super_admins', 'truncate')
+     or has_table_privilege('service_role', 'basecamp.super_admins', 'update') then
+    raise exception 'service_role holds UPDATE or TRUNCATE on the trust root — either defeats the last-row guard without changing the row count';
+  end if;
+
+  -- Both guards must EXIST and be ENABLED. Asserting the trigger's source text
+  -- would prove nothing: `alter table … disable trigger` leaves the definition
+  -- in place, and with both disabled the table can be emptied by one DELETE.
+  select count(*) into n from pg_trigger
+   where tgrelid = 'basecamp.super_admins'::regclass
+     and tgname in ('basecamp_super_admins_keep_last', 'basecamp_super_admins_no_truncate')
+     and tgenabled <> 'D';
+  if n <> 2 then
+    raise exception 'the trust-root guards are missing or disabled (% of 2 enabled)', n;
+  end if;
+
+  -- Any view here must run with the CALLER's rights, or it reads past RLS.
+  select count(*) into n
+    from pg_class c join pg_namespace ns on ns.oid = c.relnamespace
+   where ns.nspname = 'basecamp' and c.relkind in ('v', 'm')
+     and not coalesce((select option_value::boolean
+                         from pg_options_to_table(c.reloptions)
+                        where option_name = 'security_invoker'), false);
+  if n <> 0 then
+    raise exception '% view(s) in basecamp run with owner rights and bypass RLS — create them WITH (security_invoker = true)', n;
+  end if;
+
+  raise notice 'security boundary asserted: owners pinned, definers hardened, anon shut out, trust-root privileges and guards verified, no owner-rights views, app role able to reach the schema';
 end $$;
 
 commit;
 
 -- NEXT: create the first administrator. There is no bootstrap function — see
--- supabase/template/README.md, "The first administrator on a client project".
+-- supabase/README.md, steps 2 and 3.

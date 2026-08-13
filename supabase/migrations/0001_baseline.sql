@@ -1,25 +1,28 @@
 -- GENERATED — DO NOT EDIT BY HAND.
 --
--- Schema-only baseline for a fresh Basecamp instance. Produced by
--- scripts/generate-template-baseline.mjs from the canonical migration
--- lineage in supabase/migrations/. Hand-edit this file and the next
--- regeneration silently discards your change.
+-- Schema-only baseline for a fresh instance, squashed with pg_dump from an
+-- upstream migration lineage that is not part of this template. It is applied
+-- once at provisioning; see supabase/README.md.
 --
 -- Contains NO data: no catalog seed, no backfills, no rows at all. It is
 -- the shape of the schema, not its contents.
 --
--- The stamp below is load-bearing: src/lib/templateBaseline.test.ts fails
--- if it is not the newest SCHEMA-EFFECTING migration, which is what stops a
--- schema migration merging without a regenerated baseline. Data-only
--- migrations do not move it, because they are absent from a schema squash
--- by construction.
+-- The stamp below is PROVENANCE ONLY in this template: it records which
+-- upstream migration this schema was squashed from. Nothing in this repository
+-- verifies it — the staleness guard that does lives in the private upstream and
+-- does not run here. Do not read it as a checked invariant.
+--
+-- Two hand edits were applied to this generated file, and must be re-applied on
+-- any regeneration: the pg_dump 17.6+ \restrict/\unrestrict wrapper lines were
+-- removed (they are psql meta-commands and are rejected by the Supabase SQL
+-- Editor, which is the documented way to apply this file), and COMMENT strings
+-- naming the originating organisation were rewritten.
 --
 -- SOURCE-MIGRATION-VERSION: 20260812120300
 --
 -- PostgreSQL database dump
 --
 
-\restrict ed2eESk6t6AP4ABaVNfn4aFA53r4SxT3ePl7xLhOy1a8hN9AMEaaCRfN4JxYVEX
 
 -- Dumped from database version 17.4
 -- Dumped by pg_dump version 17.10 (Homebrew)
@@ -27,7 +30,6 @@
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
-SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -105,7 +107,7 @@ CREATE TYPE basecamp.entry_status AS ENUM (
 -- Name: TYPE entry_status; Type: COMMENT; Schema: basecamp; Owner: -
 --
 
-COMMENT ON TYPE basecamp.entry_status IS 'Mixed-axis by design of the original spec: active/coming_soon/retiring/wind_down are lifecycle, orphaned is an ownership fact, unverified is confidence in the catalog row itself. An entry that is simultaneously active, orphaned and unverified cannot be represented — see issues.md.';
+COMMENT ON TYPE basecamp.entry_status IS 'Mixed-axis by design of the original spec: active/coming_soon/retiring/wind_down are lifecycle, orphaned is an ownership fact, unverified is confidence in the catalog row itself. An entry that is simultaneously active, orphaned and unverified cannot be represented.';
 
 
 --
@@ -125,7 +127,7 @@ CREATE TYPE basecamp.entry_trigger_type AS ENUM (
 -- Name: TYPE entry_trigger_type; Type: COMMENT; Schema: basecamp; Owner: -
 --
 
-COMMENT ON TYPE basecamp.entry_trigger_type IS 'What causes the entry to run. Single-valued by design of the original spec; things that are both webhook- and manually-triggered cannot be fully represented. See issues.md.';
+COMMENT ON TYPE basecamp.entry_trigger_type IS 'What causes the entry to run. Single-valued by design of the original spec; things that are both webhook- and manually-triggered cannot be fully represented.';
 
 
 --
@@ -163,7 +165,7 @@ CREATE TYPE basecamp.nav_group AS ENUM (
 -- Name: TYPE nav_group; Type: COMMENT; Schema: basecamp; Owner: -
 --
 
-COMMENT ON TYPE basecamp.nav_group IS 'Sidebar section for a launchable entry. Presentation only — confers no access. Order is marketing, sales, operations, external, per the Claude Design handoff.';
+COMMENT ON TYPE basecamp.nav_group IS 'Sidebar section for a launchable entry. Presentation only — confers no access. Order is marketing, sales, operations, external.';
 
 
 --
@@ -314,8 +316,9 @@ CREATE FUNCTION basecamp.list_people() RETURNS TABLE(id uuid, email text)
   select u.id, u.email::text
     from auth.users u
    where basecamp.is_super_admin()
-     -- Accounts that never confirmed cannot sign in, so granting them access
-     -- would be a grant nobody can use. Excluded to keep the roster honest.
+     -- auth.users.email is nullable (phone- and SSO-only accounts exist) and
+     -- this function returns id + email, so a row with no email cannot be
+     -- rendered. NOT a confirmation filter: unconfirmed accounts ARE returned.
      and u.email is not null
    order by u.email;
 $$;
@@ -1345,7 +1348,7 @@ GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE basecamp.members TO authenticated;
 -- Name: TABLE super_admins; Type: ACL; Schema: basecamp; Owner: -
 --
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE basecamp.super_admins TO service_role;
+GRANT SELECT,INSERT,DELETE ON TABLE basecamp.super_admins TO service_role;
 GRANT SELECT ON TABLE basecamp.super_admins TO authenticated;
 
 
@@ -1368,12 +1371,11 @@ ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA basecamp GRANT ALL ON SEQUE
 -- Name: DEFAULT PRIVILEGES FOR TABLES; Type: DEFAULT ACL; Schema: basecamp; Owner: -
 --
 
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA basecamp GRANT ALL ON TABLES TO service_role;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA basecamp GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO service_role;
 
 
 --
 -- PostgreSQL database dump complete
 --
 
-\unrestrict ed2eESk6t6AP4ABaVNfn4aFA53r4SxT3ePl7xLhOy1a8hN9AMEaaCRfN4JxYVEX
 

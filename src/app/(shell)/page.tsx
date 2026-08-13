@@ -58,7 +58,7 @@ export default async function HomePage({
       })
       // (sort_order, slug), not sort_order alone. sort_order is NOT unique and
       // defaults to 0, so ties order non-deterministically between renders —
-      // CLAUDE.md -> Ordering states this explicitly. The tiebreaker also means
+      // sort_order is not a total order on its own. The tiebreaker also means
       // two app-created entries landing on 0 still render in a stable order.
       .order("sort_order", { ascending: true })
       .order("slug", { ascending: true })
@@ -176,12 +176,12 @@ export default async function HomePage({
                 with other apps any of their customers can sign in here
                 with their own credentials and reach this branch. RLS holds and
                 no catalog data leaks — but an earlier version of this state
-                also described what Basecamp is, explained that access is
+                also described what this app is, explained that access is
                 granted per entry or per category rather than by job title, and
                 echoed the viewer's email back at them. That disclosed the
                 existence, purpose and access model of an internal tool to
                 arbitrary tenants.
-                Until a Basecamp-owned membership roster exists (issues.md), the
+                Until a schema-owned membership roster exists, the
                 app cannot tell "a team member awaiting a grant" from
                 "stranger holding a project JWT", so it must say the same minimal
                 thing to both. */}

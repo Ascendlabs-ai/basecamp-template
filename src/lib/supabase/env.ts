@@ -12,7 +12,7 @@
 function required(name: string, value: string | undefined): string {
   if (!value) {
     throw new Error(
-      `${name} is not set. Copy .env.example to .env.local and fill it in — see CLAUDE.md → Environment Variables.`,
+      `${name} is not set. Copy .env.local.example to .env.local and fill it in — see README.md → Setup.`,
     );
   }
   return value;

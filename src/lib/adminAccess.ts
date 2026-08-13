@@ -13,13 +13,14 @@ import type {
 
 /**
  * Access-screen logic. Lives in `src/lib/` — not `src/types/` — because it is
- * executable behaviour, and CLAUDE.md states the testing rule as "run it after
+ * executable behaviour, and the repo convention is "run the tests after
  * touching anything under `src/lib/`". Behaviour parked in a module named
  * `types` sits outside the one trigger the convention names, and the test file
  * for it was already reaching out of `lib/` to import it.
  *
  * None of this DECIDES access — the RLS policies do, via `basecamp.has_grant`, and it is
- * probed against the live database in supabase/tests/. What lives here is the
+ * enforced by the policies themselves — this template ships no database probe
+ * suite, so that enforcement is unverified here. What lives here is the
  * UI's picture of that decision, which must agree with it.
  */
 
@@ -87,7 +88,7 @@ export const CREATE_TYPE_KEY = "create-type";
 /**
  * Index grants by (user, target) for O(1) lookup while rendering a matrix that
  * is people x entries. A linear scan per cell would be O(people x entries x
- * grants) — with 28 people and 44 entries that is over a thousand scans per
+ * grants) — with dozens of people and entries that is thousands of scans per
  * render.
  */
 export function indexGrants(grants: Grant[]): Map<string, Grant> {
@@ -138,7 +139,7 @@ export function describeError(error: { code?: string; message?: string } | null)
  * `first.last@…` -> "FL". Falls back to "?" rather than throwing on an empty
  * or punctuation-only local part.
  *
- * There is no a profiles table on this Supabase project and `list_people()` returns
+ * There is no profiles table on this Supabase project and `list_people()` returns
  * only id and email, so the email IS the whole identity this app has.
  */
 export function initialsFromEmail(email: string): string {
@@ -183,7 +184,8 @@ export function indexMembers(members: Member[]): Map<string, Member> {
  * How this person came to see this entry — the UI's mirror of
  * `basecamp.has_grant` — which is what the read policies actually run.
  * (`can_read_entry` states the same rule readably but is called by no policy;
- * PART 8 of the probe suite holds the two to each other.)
+ * nothing in this template holds the two to each other — keep them in step by
+ * hand.)
  *
  * The SQL is `super_admin OR individual OR type`. This deliberately does NOT
  * model super_admin: the matrix answers "what has been granted", and a

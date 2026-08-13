@@ -101,7 +101,7 @@
     "entry_type": "launchable",
     "launch_url": "https://status.example.com",
     "sort_order": 40,
-    "description": null,
+    "description": "Uptime and incident status for the services the team runs.",
     "runbook_url": "https://handbook.example.com/runbooks/status",
     "display_name": "Status Board",
     "trigger_type": "cron",

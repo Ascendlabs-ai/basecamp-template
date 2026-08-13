@@ -12,7 +12,7 @@ administrator. Nothing else.
 > Supabase CLI's 14-digit timestamps, because they are applied once at
 > provisioning through the SQL Editor or `psql` — not pushed with
 > `supabase db push`. If you would rather manage them with the CLI, rename them
-> to timestamped form first; the contents do not care.
+> to timestamped form first.
 
 ---
 
@@ -45,7 +45,15 @@ security boundary, so if it commits without raising, the boundary holds:
   `public`;
 - `authenticated` *can* reach the schema and read `basecamp.entries` — the
   check that catches an install which would otherwise fail
-  `permission denied for schema basecamp` on every request.
+  `permission denied for schema basecamp` on every request;
+- `authenticated` holds **no write** on `basecamp.super_admins`, and
+  `service_role` holds neither UPDATE nor TRUNCATE on it — an UPDATE would
+  reassign the roster without changing the row count, so the last-row guard
+  would never fire;
+- both trust-root guards exist **and are enabled** (a disabled trigger keeps its
+  definition, so asserting the source text would prove nothing);
+- no view in `basecamp` runs with owner rights — since PG15 a view without
+  `security_invoker` reads straight past RLS.
 
 ### 2. Create the administrator's account
 
@@ -89,6 +97,16 @@ screen is the only proof the trust root took.
 Categories and entries are `super_admin`-only writes, enforced by policy. There
 is no catalog-editing UI in this template yet; add rows with SQL, or build the
 screen — the write policies are already correct.
+
+Start from **`supabase/seed.example.sql`**: 4 categories and 12 entries covering
+all three entry types and a spread of statuses, with the non-obvious constraints
+(the slug regex, the launchable-needs-a-URL rule, the nav_group restriction)
+written out at the top. Run it, click around, then delete the rows and write
+your own. It is idempotent, so re-running it is a no-op.
+
+Note that after seeding you will see the catalog only because you are a
+super_admin. A colleague with no grants sees nothing until you grant them
+something in `/admin/access` — that is the access model working.
 
 ---
 
@@ -168,15 +186,21 @@ select prosrc from pg_proc p
 Calling `basecamp.is_super_admin()` bare in the editor proves nothing — it runs
 as `postgres`, `auth.uid()` is null, and it returns false for reasons unrelated
 to whether your administrators can get in. To ask the question *as* someone,
-highlight all three of these and run them together:
+highlight both of these and run them together:
 
 ```sql
 select set_config('request.jwt.claims',
-  '{"sub":"THEIR-UUID-HERE","role":"authenticated"}', false);
-select basecamp.is_super_admin() as must_be_true;
-select set_config('request.jwt.claims', '', false);
+  '{"sub":"THEIR-UUID-HERE","role":"authenticated"}', true);
+select basecamp.is_super_admin() as must_be_true;   -- last, so you can see it
 ```
 
-`false` as the third argument makes the setting session-scoped rather than
-transaction-scoped, and the editor pools connections — so they must share one
-submission or the setting is gone before the second statement runs.
+Two details that matter. Put the `is_super_admin()` call **last**: the SQL
+Editor renders only the final statement's result grid, so a trailing reset
+statement would hide the very answer you are after. And pass `true` as the third
+argument — a multi-statement submission runs as one implicit transaction, so a
+transaction-local setting both works and reverts itself on commit. `false` would
+leave a spoofed identity on a pooled backend after the transaction ends.
+
+This proves the gate's LOGIC while connected as `postgres`. It does not prove
+that the `authenticated` role can reach the schema — the exposure step and a
+real sign-in are what prove that.

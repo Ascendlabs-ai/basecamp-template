@@ -250,7 +250,7 @@ export default function SidebarContent({
         Audit log. Only Access exists; the other two are undesigned and
         unbuilt, so a disclosure container wrapping a single item would be
         chrome around nothing. Flat row until a second admin screen lands.
-        Recorded in Design/README-HANDOFF.md.
+        A deliberate design choice, kept on rebrand.
       */}
             <NavItem
               href="/admin/access"

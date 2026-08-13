@@ -1,8 +1,7 @@
 /**
  * Shapes mirroring schema `basecamp` on a shared Supabase project.
  *
- * Enum members are taken from 20260725130239 plus the `unknown` members added
- * in 20260725195400.
+ * Enum members mirror the types created in supabase/migrations/0001_baseline.sql.
  *
  * `entry_type` and `status` are hard unions: the UI branches on them, so a new
  * member genuinely needs code here and a type error is the right way to find
