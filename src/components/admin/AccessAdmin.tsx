@@ -1,0 +1,685 @@
+"use client";
+
+import { useCallback, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+
+import Alert from "@mui/material/Alert";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import Paper from "@mui/material/Paper";
+import Snackbar from "@mui/material/Snackbar";
+import Tooltip from "@mui/material/Tooltip";
+import Typography from "@mui/material/Typography";
+import { visuallyHidden } from "@mui/utils";
+
+import TopBar from "@/components/shell/TopBar";
+import {
+  CREATE_TYPE_KEY,
+  deleteTypeKey,
+  describeError,
+  effectiveEntryCount,
+  isTransportFailure,
+  indexGrants,
+  indexMembers,
+  indexTypeGrants,
+  memberKey,
+  pendingKey,
+  typeGrantKey,
+} from "@/lib/adminAccess";
+import { createClient } from "@/lib/supabase/client";
+import type {
+  Grant,
+  GrantCategory,
+  Member,
+  MemberType,
+  Person,
+  ToggleTarget,
+  TypeGrant,
+} from "@/types/admin";
+
+import AccessMatrix from "./AccessMatrix";
+import GrantsByPerson from "./GrantsByPerson";
+import PersonList from "./PersonList";
+import TypesAdmin from "./TypesAdmin";
+import ViewSwitch, { type AdminView } from "./ViewSwitch";
+
+/**
+ * How long before the user is TOLD a write has not landed.
+ *
+ * Deliberately not a claim release. An earlier version released the key when
+ * this fired, which re-opened the target while the request was still running:
+ * a second click took the delete branch and sent `.eq("id", "optimistic:e:…")`
+ * against a uuid column, surfacing as "Could not revoke access (22P02)". So the
+ * NOTIFICATION is bounded and the claim is not — a request that never settles
+ * leaves that one cell spinning until a reload, which is what the timeout
+ * message tells the user to do. That is the accepted trade, recorded here
+ * because the two are easy to confuse.
+ */
+const WRITE_TIMEOUT_MS = 15_000;
+const TIMEOUT_MESSAGE = "That change timed out. Reload to see the current access state.";
+
+/** A losing race must not leave a 15-minute-a-day drip of dangling timers. */
+function deadline(ms: number): { promise: Promise<string>; cancel: () => void } {
+  let handle: ReturnType<typeof setTimeout>;
+  const promise = new Promise<string>((resolve) => {
+    handle = setTimeout(() => resolve(TIMEOUT_MESSAGE), ms);
+  });
+  return { promise, cancel: () => clearTimeout(handle) };
+}
+
+/**
+ * Message for a failed WRITE — and a resync when the failure is ambiguous.
+ *
+ * Zero rows back cannot distinguish "RLS refused" from "someone else did it",
+ * so those paths already refresh. A TRANSPORT failure is ambiguous for the same
+ * reason — the request may have reached Postgres and committed before the
+ * connection died — and every write path needs the same treatment. Inserts got
+ * it first and the deletes were missed, which was backwards: this file argues
+ * that a stale "granted" is a lie about access while a stale "not granted" is
+ * only a lost write, and the deletes are the ones that go stale-granted.
+ *
+ * A returned SQLSTATE is real evidence the database refused — 23505, 42501 —
+ * and needs no refresh. `describeError` yields "network error" precisely when
+ * there is no code, which is the case that does.
+ */
+function failedWrite(
+  prefix: string,
+  error: { code?: string } | null,
+  router: { refresh: () => void },
+): string {
+  // `!error` reaches here when the insert returned neither an error nor a row —
+  // the MOST ambiguous outcome there is, and an earlier version routed exactly
+  // that case to the no-refresh branch. Both it and a transport failure get a
+  // resync; only a real SQLSTATE is evidence the database refused.
+  if (isTransportFailure(error)) {
+    router.refresh();
+    return `${prefix} — it is unclear whether it applied. Reloading the current state.`;
+  }
+  return `${prefix} (${describeError(error)}).`;
+}
+
+/** Stated in two places — the tooltip and an aria-describedby target. */
+const INVITE_REASON =
+  "Not built. People already exist in the shared Supabase Auth directory — onboarding here is a type assignment, not an invite.";
+
+/**
+ * Admin · Access — three views over one access model.
+ *
+ * ACCESS MODEL. Effective access is the UNION of two independent sources:
+ *   type grants   what the person's member_type is granted (the reusable half)
+ *   access_grants what that person is granted personally (the exception half)
+ * Neither overrides the other and neither can subtract. That is what lets a
+ * matrix cell name its source honestly instead of showing a boolean whose
+ * provenance you have to go and look up.
+ *
+ * WRITES. Every mutation goes through the anon key on the signed-in
+ * super_admin's session, so the RLS policies decide. There is no service_role
+ * path and there must never be one: service_role bypasses RLS, which would let
+ * this screen write grants the database itself would refuse.
+ *
+ * The optimistic-write machinery here (ref-based claim, try/finally,
+ * snapshot resync) is load-bearing and was arrived at the hard way — see the
+ * comments at each piece before simplifying any of it.
+ */
+export default function AccessAdmin({
+  people,
+  categories,
+  launchableCategories,
+  initialGrants,
+  memberTypes,
+  initialMembers,
+  initialTypeGrants,
+  currentUserId,
+}: {
+  people: Person[];
+  categories: GrantCategory[];
+  launchableCategories: GrantCategory[];
+  initialGrants: Grant[];
+  memberTypes: MemberType[];
+  initialMembers: Member[];
+  initialTypeGrants: TypeGrant[];
+  currentUserId: string;
+}) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const viewParam = searchParams.get("view");
+  const view: AdminView =
+    viewParam === "matrix" ? "matrix" : viewParam === "types" ? "types" : "person";
+
+  const [grants, setGrants] = useState<Grant[]>(initialGrants);
+  const [members, setMembers] = useState<Member[]>(initialMembers);
+  const [typeGrants, setTypeGrants] = useState<TypeGrant[]>(initialTypeGrants);
+  const [pending, setPending] = useState<Set<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string>(people[0]?.id ?? "");
+
+  /**
+   * The authoritative in-flight set. `pending` (state) is a MIRROR for
+   * rendering only.
+   *
+   * The claim must be synchronous and a setState updater is not: React runs an
+   * updater eagerly only while the fiber has no pending lanes, so after the
+   * first toggle of a session it is deferred to render. A previous version read
+   * a flag set inside the updater — every toggle after the first read stale,
+   * returned without writing, and still stranded its key. The feature was dead
+   * after one click.
+   */
+  const inFlight = useRef<Set<string>>(new Set());
+
+  /**
+   * Re-sync when the server sends a new snapshot. `useState` ignores later prop
+   * changes, so without this `router.refresh()` re-ran the server component and
+   * the UI kept showing the stale rows. React's documented adjust-state-on-prop-
+   * change pattern: a render-phase update guarded by identity, not an effect
+   * (this repo's hooks config rejects set-state-in-effect, and an effect would
+   * paint the stale list for a frame first).
+   */
+  const [snapshot, setSnapshot] = useState(initialGrants);
+  if (snapshot !== initialGrants) {
+    setSnapshot(initialGrants);
+    setGrants(initialGrants);
+    setMembers(initialMembers);
+    setTypeGrants(initialTypeGrants);
+    // `pending` is deliberately NOT touched here. An earlier version blanked
+    // it, which made the render mirror disagree with `inFlight`: the cell
+    // stopped spinning, the user clicked, and `run` returned at the
+    // duplicate-claim guard — no spinner, no error, no write. The fix is simply
+    // to leave it alone. `run` is the only writer and it always sets `pending`
+    // to the contents of `inFlight`, so the two cannot drift; a second mirror
+    // state was tried here and was provably a no-op.
+  }
+
+  const grantIndex = useMemo(() => indexGrants(grants), [grants]);
+  const typeGrantIndex = useMemo(() => indexTypeGrants(typeGrants), [typeGrants]);
+  const memberIndex = useMemo(() => indexMembers(members), [members]);
+  const typeById = useMemo(() => new Map(memberTypes.map((t) => [t.id, t])), [memberTypes]);
+
+  // Entries each person can actually see, counting both sources once. Derived,
+  // never stored — and computed with the same function the by-person header
+  // uses, so the two numbers on screen cannot disagree.
+  const countsByPerson = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const person of people) {
+      counts.set(
+        person.id,
+        effectiveEntryCount(grantIndex, typeGrantIndex, memberIndex, person.id, categories),
+      );
+    }
+    return counts;
+  }, [people, categories, grantIndex, typeGrantIndex, memberIndex]);
+
+  const setView = useCallback(
+    (next: AdminView) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (next === "person") params.delete("view");
+      else params.set("view", next);
+      // Same route, view state in the URL, so a view is linkable — the design
+      // asks for exactly this.
+      router.replace(`/admin/access${params.toString() ? `?${params}` : ""}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
+
+  /**
+   * Shared wrapper: claim, run, release, and surface anything that goes wrong.
+   *
+   * Resolves TRUE only when the work completed with no message — callers that
+   * need to know (the create-type form clears its fields on success only) can
+   * await it. A skipped duplicate claim resolves false, which is correct: this
+   * call did nothing.
+   */
+  const run = useCallback(
+    async (key: string, work: () => Promise<string | null>): Promise<boolean> => {
+      if (inFlight.current.has(key)) return false;
+      inFlight.current.add(key);
+      setPending(new Set(inFlight.current));
+
+      // The CLAIM is released when the request actually settles, not when the
+      // deadline fires. Releasing at the deadline while the request was still
+      // running re-opened the target: a second click re-entered the handler,
+      // found the optimistic row still present, took the DELETE branch and sent
+      // `.eq("id", "optimistic:e:…")` against a uuid column — surfacing as
+      // "Could not revoke access (22P02)".
+      const release = () => {
+        inFlight.current.delete(key);
+        setPending(new Set(inFlight.current));
+      };
+
+      const settled = work()
+        .then(
+          (message) => ({ message, timedOut: false }),
+          (cause) => {
+            console.error("[basecamp] admin mutation threw:", cause);
+            return { message: "Could not save the change. Reloading the current state.", timedOut: false };
+          },
+        )
+        .finally(release);
+
+      const timer = deadline(WRITE_TIMEOUT_MS);
+      const outcome = await Promise.race([
+        settled,
+        timer.promise.then((message) => ({ message, timedOut: true })),
+      ]);
+      timer.cancel();
+
+      if (outcome.message) setError(outcome.message);
+      if (outcome.timedOut) {
+        // The request is still in flight and its own handlers may still mutate
+        // state. Reload rather than let the screen move under a user who was
+        // just told the change did not land.
+        void settled.then(() => router.refresh());
+        return false;
+      }
+      // NO blanket refresh here. Adding one made `isTransportFailure`
+      // decorative: every deliberate refusal round-tripped the page anyway —
+      // a duplicate slug, a system-type delete, an FK-in-use, and even
+      // createType's purely client-side "no letters or digits" validation,
+      // which never touches the database. Each path that genuinely needs a
+      // resync already calls router.refresh() itself.
+      return outcome.message === null;
+    },
+    [router],
+  );
+
+  /** Grant or revoke an INDIVIDUAL entry/category for one person. */
+  const toggleGrant = useCallback(
+    (userId: string, target: ToggleTarget) =>
+      run(pendingKey(userId, target), async () => {
+        const supabase = createClient();
+        const existing = grants.find(
+          (g) =>
+            g.user_id === userId &&
+            ("entryId" in target ? g.entry_id === target.entryId : g.category_id === target.categoryId),
+        );
+
+        if (existing) {
+          // An optimistic row has no database id yet. Deleting by it would send
+          // "optimistic:e:…" to a uuid column (22P02). Unreachable while the
+          // claim is held, but this is the guard that makes that invariant
+          // belt-and-braces rather than the only thing in the way.
+          if (existing.id.startsWith("optimistic:")) return "That change is still saving.";
+          setGrants((gs) => gs.filter((g) => g.id !== existing.id));
+          // `.select()` is load-bearing: a DELETE that RLS refuses does not
+          // error — the policy FILTERS the row out — so PostgREST returns 204
+          // and supabase-js yields { error: null }. Without asking for the
+          // deleted rows back, a refused revoke rendered as a successful one.
+          const { data, error: delError } = await supabase
+            .from("access_grants").delete().eq("id", existing.id).select("id");
+          if (delError) {
+            setGrants((gs) => [...gs, existing]);
+            // Routed through failedWrite for the same reason the inserts are: a
+            // dropped connection may have DELETED the row before it died, and
+            // restoring it locally would leave the matrix asserting access that
+            // no longer exists — the direction this file calls the more serious
+            // one. Only a real SQLSTATE is evidence the database refused.
+            return failedWrite("Could not revoke access", delError, router);
+          }
+          if (!data || data.length === 0) {
+            // Zero rows has two causes the client cannot tell apart: RLS
+            // refused (row still exists) or someone else deleted it (it does
+            // not). Restore first so a refused revoke never reads as success,
+            // then ask the server which it was.
+            setGrants((gs) => [...gs, existing]);
+            router.refresh();
+            return "That change did not apply. Reloading the current access state.";
+          }
+          // RE-ASSERT the removal. The optimistic filter above is not enough:
+          // a resync landing between it and this response restores the row from
+          // the pre-delete server snapshot, and nothing would ever remove it
+          // again — leaving the matrix reporting access the database has
+          // already revoked. Symmetric with the append-if-missing on insert,
+          // and the more important half: a stale "granted" is a lie about
+          // access, a stale "not granted" is only a lost write.
+          setGrants((gs) => gs.filter((g) => g.id !== existing.id));
+          return null;
+        }
+
+        const tempId = `optimistic:${pendingKey(userId, target)}`;
+        const optimistic: Grant = {
+          id: tempId,
+          user_id: userId,
+          entry_id: "entryId" in target ? target.entryId : null,
+          category_id: "categoryId" in target ? target.categoryId : null,
+        };
+        setGrants((gs) => [...gs, optimistic]);
+        const { data, error: insError } = await supabase
+          .from("access_grants")
+          .insert({
+            user_id: userId,
+            entry_id: optimistic.entry_id,
+            category_id: optimistic.category_id,
+            granted_by: currentUserId,
+          })
+          .select("id, user_id, entry_id, category_id")
+          .single();
+        if (insError || !data) {
+          setGrants((gs) => gs.filter((g) => g.id !== tempId));
+          return failedWrite("Could not grant access", insError, router);
+        }
+        // Append-if-missing, not a bare map. A resync landing between the
+        // insert and its response discards the optimistic row by identity, and
+        // a pure map would then find no tempId and silently drop a grant that
+        // the database actually created.
+        setGrants((gs) =>
+          gs.some((g) => g.id === tempId)
+            ? gs.map((g) => (g.id === tempId ? (data as Grant) : g))
+            : [...gs, data as Grant],
+        );
+        return null;
+      }),
+    [grants, currentUserId, router, run],
+  );
+
+  /** Grant or revoke an entry/category for a whole TYPE. */
+  const toggleTypeGrant = useCallback(
+    (typeId: string, target: ToggleTarget) =>
+      run(typeGrantKey(typeId, target), async () => {
+        const supabase = createClient();
+        const existing = typeGrants.find(
+          (g) =>
+            g.member_type_id === typeId &&
+            ("entryId" in target ? g.entry_id === target.entryId : g.category_id === target.categoryId),
+        );
+
+        if (existing) {
+          if (existing.id.startsWith("optimistic:")) return "That change is still saving.";
+          setTypeGrants((gs) => gs.filter((g) => g.id !== existing.id));
+          const { data, error: delError } = await supabase
+            .from("type_grants").delete().eq("id", existing.id).select("id");
+          if (delError || !data || data.length === 0) {
+            setTypeGrants((gs) => [...gs, existing]);
+            if (delError) return failedWrite("Could not remove the type grant", delError, router);
+            router.refresh();
+            return "That change did not apply. Reloading the current access state.";
+          }
+          setTypeGrants((gs) => gs.filter((g) => g.id !== existing.id));  // see toggleGrant
+          return null;
+        }
+
+        const tempId = `optimistic:type:${typeId}:${"entryId" in target ? target.entryId : target.categoryId}`;
+        const optimistic: TypeGrant = {
+          id: tempId,
+          member_type_id: typeId,
+          entry_id: "entryId" in target ? target.entryId : null,
+          category_id: "categoryId" in target ? target.categoryId : null,
+        };
+        setTypeGrants((gs) => [...gs, optimistic]);
+        const { data, error: insError } = await supabase
+          .from("type_grants")
+          .insert({
+            member_type_id: typeId,
+            entry_id: optimistic.entry_id,
+            category_id: optimistic.category_id,
+          })
+          .select("id, member_type_id, entry_id, category_id")
+          .single();
+        if (insError || !data) {
+          setTypeGrants((gs) => gs.filter((g) => g.id !== tempId));
+          return failedWrite("Could not add the type grant", insError, router);
+        }
+        setTypeGrants((gs) =>
+          gs.some((g) => g.id === tempId)
+            ? gs.map((g) => (g.id === tempId ? (data as TypeGrant) : g))
+            : [...gs, data as TypeGrant],
+        );
+        return null;
+      }),
+    [typeGrants, router, run],
+  );
+
+  /** Set or clear a person's type and department. `typeId === null` removes it. */
+  const assignMember = useCallback(
+    (userId: string, typeId: string | null, department: string | null) =>
+      run(memberKey(userId), async () => {
+        const supabase = createClient();
+        const existing = members.find((m) => m.user_id === userId);
+
+        if (typeId === null) {
+          if (!existing) return null;
+          setMembers((ms) => ms.filter((m) => m.id !== existing.id));
+          const { data, error: delError } = await supabase
+            .from("members").delete().eq("id", existing.id).select("id");
+          if (delError || !data || data.length === 0) {
+            setMembers((ms) => [...ms, existing]);
+            if (delError) return failedWrite("Could not remove the type", delError, router);
+            router.refresh();
+            return "That change did not apply. Reloading the current state.";
+          }
+          setMembers((ms) => ms.filter((m) => m.id !== existing.id));  // see toggleGrant
+          return null;
+        }
+
+        if (existing) {
+          const previous = existing;
+          const next = { ...existing, member_type_id: typeId, department };
+          setMembers((ms) => ms.map((m) => (m.id === existing.id ? next : m)));
+          const { data, error: updError } = await supabase
+            .from("members")
+            .update({ member_type_id: typeId, department })
+            .eq("id", existing.id)
+            .select("id, user_id, member_type_id, department");
+          if (updError || !data || data.length === 0) {
+            setMembers((ms) => ms.map((m) => (m.id === previous.id ? previous : m)));
+            if (updError) return failedWrite("Could not change the type", updError, router);
+            router.refresh();
+            return "That change did not apply. Reloading the current state.";
+          }
+          // Append-if-missing, same reasoning as the grant paths: a resync
+          // landing mid-update drops the row by identity, and a bare map would
+          // then discard the server's own updated copy.
+          setMembers((ms) =>
+            ms.some((m) => m.id === existing.id)
+              ? ms.map((m) => (m.id === existing.id ? (data[0] as Member) : m))
+              : [...ms, data[0] as Member],
+          );
+          return null;
+        }
+
+        const { data, error: insError } = await supabase
+          .from("members")
+          .insert({ user_id: userId, member_type_id: typeId, department })
+          .select("id, user_id, member_type_id, department")
+          .single();
+        if (insError || !data) return failedWrite("Could not assign the type", insError, router);
+        // Not a bare append: if a resync landed after the insert committed, the
+        // snapshot already holds this row and appending would duplicate it —
+        // and TypesAdmin counts the raw array, so one holder would render as
+        // "2 people".
+        setMembers((ms) =>
+          ms.some((m) => m.id === (data as Member).id) ? ms : [...ms, data as Member],
+        );
+        return null;
+      }),
+    [members, router, run],
+  );
+
+  /** Create a custom (non-system) type. */
+  const createType = useCallback(
+    (name: string, description: string | null) =>
+      run(CREATE_TYPE_KEY, async () => {
+        const supabase = createClient();
+        const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+        if (!slug) return "That name has no letters or digits to build a slug from.";
+        const maxSort = memberTypes.reduce((n, t) => Math.max(n, t.sort_order), 0);
+        const { error: insError } = await supabase.from("member_types").insert({
+          slug,
+          name: name.trim(),
+          description,
+          is_admin: false,
+          // Never is_system: that flag marks the four types the app refers to by
+          // slug and the database refuses to delete. A user-created type must
+          // stay deletable.
+          is_system: false,
+          sort_order: maxSort + 10,
+        });
+        if (insError) {
+          return insError.code === "23505"
+            ? `A type with the slug "${slug}" already exists.`
+            : `Could not create the type (${describeError(insError)}).`;
+        }
+        // Types are read on the server (they drive the person list too), so the
+        // new row arrives through a refresh rather than being spliced in here.
+        router.refresh();
+        return null;
+      }),
+    [memberTypes, router, run],
+  );
+
+  /** Delete a custom type. System types are refused by the database. */
+  const deleteType = useCallback(
+    (typeId: string) =>
+      run(deleteTypeKey(typeId), async () => {
+        const supabase = createClient();
+        const { data, error: delError } = await supabase
+          .from("member_types").delete().eq("id", typeId).select("id");
+        if (delError) {
+          // 23001 restrict_violation is the system-type trigger; 23503 is the
+          // FK from members. Both are the database refusing on purpose, so say
+          // which rather than printing a code.
+          if (delError.code === "23001") return "That is a system type and cannot be deleted.";
+          if (delError.code === "23503") {
+            return "People still hold that type. Reassign them first, then delete it.";
+          }
+          return `Could not delete the type (${describeError(delError)}).`;
+        }
+        if (!data || data.length === 0) {
+          router.refresh();
+          return "That change did not apply. Reloading the current state.";
+        }
+        router.refresh();
+        return null;
+      }),
+    [router, run],
+  );
+
+  const selected = people.find((p) => p.id === selectedId) ?? people[0];
+
+  if (categories.length === 0 || people.length === 0) {
+    return (
+      <>
+        <TopBar parent="Admin" current="Access" />
+        <Box component="main" id="main-content" tabIndex={-1} sx={{ px: { xs: 2, md: 4 }, py: { xs: 3, md: 3.25 }, flex: 1 }}>
+          <Paper
+            elevation={0}
+            sx={{
+              maxWidth: 520, mx: "auto", mt: { xs: 4, md: 10 }, p: { xs: 3, sm: 5 },
+              textAlign: "center", border: 1, borderColor: "divider",
+            }}
+          >
+            <Typography variant="h6" component="h1" sx={{ fontWeight: 700, mb: 1 }}>
+              Nothing to grant yet
+            </Typography>
+            <Typography variant="body2" sx={{ color: "text.secondary", lineHeight: 1.7 }}>
+              {categories.length === 0
+                ? "The catalog has no entries, so there is no access to assign. Add catalog entries first."
+                : "There are no accounts to grant access to."}
+            </Typography>
+          </Paper>
+        </Box>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <TopBar parent="Admin" current="Access">
+        <ViewSwitch value={view} onChange={setView} />
+        <Tooltip title={INVITE_REASON}>
+          <Box component="span" sx={{ display: "inline-flex" }}>
+            {/* aria-disabled, not `disabled` — a disabled button leaves the tab
+                order, which made its own aria-describedby unreachable in focus
+                mode. Focusable and announced; the click does nothing. */}
+            <Button
+              variant="contained"
+              size="small"
+              aria-disabled
+              aria-describedby="invite-disabled-reason"
+              onClick={(e) => e.preventDefault()}
+              sx={(t) => ({
+                borderRadius: 50,
+                px: 2.25,
+                cursor: "not-allowed",
+                backgroundColor: t.palette.action.disabledBackground,
+                color: t.palette.text.disabled,
+                "&:hover": { backgroundColor: t.palette.action.disabledBackground, boxShadow: "none" },
+              })}
+            >
+              Invite staff
+            </Button>
+          </Box>
+        </Tooltip>
+        <Box component="span" id="invite-disabled-reason" sx={visuallyHidden}>
+          {INVITE_REASON}
+        </Box>
+      </TopBar>
+
+      <Box component="main" id="main-content" tabIndex={-1} sx={{ px: { xs: 2, md: 4 }, py: { xs: 2.5, md: 3 }, flex: 1, minWidth: 0 }}>
+        {view === "person" ? (
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: { xs: "1fr", md: "292px minmax(0, 1fr)" },
+              gap: 2,
+              alignItems: "start",
+            }}
+          >
+            <PersonList
+              people={people}
+              selectedId={selected?.id ?? ""}
+              counts={countsByPerson}
+              members={memberIndex}
+              typeById={typeById}
+              onSelect={setSelectedId}
+            />
+            {selected ? (
+              <GrantsByPerson
+                person={selected}
+                categories={categories}
+                grantIndex={grantIndex}
+                typeGrantIndex={typeGrantIndex}
+                memberIndex={memberIndex}
+                memberTypes={memberTypes}
+                pending={pending}
+                onToggle={toggleGrant}
+                onAssign={assignMember}
+              />
+            ) : null}
+          </Box>
+        ) : view === "matrix" ? (
+          <AccessMatrix
+            people={people}
+            categories={launchableCategories}
+            grantIndex={grantIndex}
+            typeGrantIndex={typeGrantIndex}
+            memberIndex={memberIndex}
+            typeById={typeById}
+            pending={pending}
+            onToggle={toggleGrant}
+          />
+        ) : (
+          <TypesAdmin
+            memberTypes={memberTypes}
+            categories={categories}
+            typeGrants={typeGrants}
+            members={members}
+            pending={pending}
+            onToggleTypeGrant={toggleTypeGrant}
+            onCreateType={createType}
+            onDeleteType={deleteType}
+          />
+        )}
+      </Box>
+
+      <Snackbar
+        open={error !== null}
+        autoHideDuration={6000}
+        onClose={() => setError(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert severity="error" variant="filled" onClose={() => setError(null)}>
+          {error}
+        </Alert>
+      </Snackbar>
+    </>
+  );
+}
