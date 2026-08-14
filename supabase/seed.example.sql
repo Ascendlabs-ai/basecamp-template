@@ -26,8 +26,8 @@ insert into basecamp.categories (slug, name, description, sort_order) values
   ('priority', 'Priority', 'The current focus. Held to a small number of entries on purpose.', 10)
 on conflict (slug) do nothing;
 
-insert into basecamp.entries (category_id, slug, display_name, technical_name, description, entry_type, status, host, auth_boundary, trigger_type, owner, launch_url, repo_url, runbook_url, source_of_truth_note, sort_order)
-select c.id, 'analytics', 'Analytics Dashboard', 'analytics-dashboard', 'Traffic, funnels and revenue in one place.', 'launchable'::basecamp.entry_type, 'active'::basecamp.entry_status, 'vercel'::basecamp.entry_host, 'platform_auth'::basecamp.entry_auth_boundary, 'user'::basecamp.entry_trigger_type, 'Data team', 'https://analytics.example.com', 'https://github.com/example-org/analytics-dashboard', null, 'Provenance: confirmed against the deployment on the date shown.', 10
+insert into basecamp.entries (category_id, slug, display_name, technical_name, description, entry_type, status, host, auth_boundary, trigger_type, owner, launch_url, repo_url, runbook_url, source_of_truth_note, sort_order, nav_group)
+select c.id, 'analytics', 'Analytics Dashboard', 'analytics-dashboard', 'Traffic, funnels and revenue in one place.', 'launchable'::basecamp.entry_type, 'active'::basecamp.entry_status, 'vercel'::basecamp.entry_host, 'platform_auth'::basecamp.entry_auth_boundary, 'user'::basecamp.entry_trigger_type, 'Data team', 'https://analytics.example.com', 'https://github.com/example-org/analytics-dashboard', null, 'Provenance: confirmed against the deployment on the date shown.', 10, 'operations'::basecamp.nav_group
   from basecamp.categories c where c.slug = 'priority'
 on conflict (slug) do nothing;
 
@@ -35,23 +35,23 @@ insert into basecamp.categories (slug, name, description, sort_order) values
   ('core-internal', 'Core internal', 'The tools the team uses every day.', 20)
 on conflict (slug) do nothing;
 
-insert into basecamp.entries (category_id, slug, display_name, technical_name, description, entry_type, status, host, auth_boundary, trigger_type, owner, launch_url, repo_url, runbook_url, source_of_truth_note, sort_order)
-select c.id, 'crm', 'Client Tracker', 'client-tracker', 'Accounts, contacts and renewal dates.', 'launchable'::basecamp.entry_type, 'active'::basecamp.entry_status, 'vercel'::basecamp.entry_host, 'platform_auth'::basecamp.entry_auth_boundary, 'user'::basecamp.entry_trigger_type, 'Operations', 'https://crm.example.com', 'https://github.com/example-org/client-tracker', null, 'Provenance: recorded from the owning team, not independently checked.', 10
+insert into basecamp.entries (category_id, slug, display_name, technical_name, description, entry_type, status, host, auth_boundary, trigger_type, owner, launch_url, repo_url, runbook_url, source_of_truth_note, sort_order, nav_group)
+select c.id, 'crm', 'Account Book', 'account-book', 'Accounts, contacts and renewal dates.', 'launchable'::basecamp.entry_type, 'active'::basecamp.entry_status, 'vercel'::basecamp.entry_host, 'platform_auth'::basecamp.entry_auth_boundary, 'user'::basecamp.entry_trigger_type, 'Operations', 'https://crm.example.com', 'https://github.com/example-org/account-book', null, 'Provenance: recorded from the owning team, not independently checked.', 10, 'sales'::basecamp.nav_group
   from basecamp.categories c where c.slug = 'core-internal'
 on conflict (slug) do nothing;
 
-insert into basecamp.entries (category_id, slug, display_name, technical_name, description, entry_type, status, host, auth_boundary, trigger_type, owner, launch_url, repo_url, runbook_url, source_of_truth_note, sort_order)
-select c.id, 'docs', 'Team Handbook', 'handbook', 'How we work: policies, runbooks and onboarding.', 'launchable'::basecamp.entry_type, 'active'::basecamp.entry_status, 'vercel'::basecamp.entry_host, 'platform_auth'::basecamp.entry_auth_boundary, 'user'::basecamp.entry_trigger_type, 'Operations', 'https://handbook.example.com', null, null, 'Provenance: inherited from the previous inventory; re-verify before relying on it.', 20
+insert into basecamp.entries (category_id, slug, display_name, technical_name, description, entry_type, status, host, auth_boundary, trigger_type, owner, launch_url, repo_url, runbook_url, source_of_truth_note, sort_order, nav_group)
+select c.id, 'docs', 'Team Handbook', 'handbook', 'How we work: policies, runbooks and onboarding.', 'launchable'::basecamp.entry_type, 'active'::basecamp.entry_status, 'vercel'::basecamp.entry_host, 'platform_auth'::basecamp.entry_auth_boundary, 'user'::basecamp.entry_trigger_type, 'Operations', 'https://handbook.example.com', null, null, 'Provenance: inherited from the previous inventory; re-verify before relying on it.', 20, 'operations'::basecamp.nav_group
   from basecamp.categories c where c.slug = 'core-internal'
 on conflict (slug) do nothing;
 
-insert into basecamp.entries (category_id, slug, display_name, technical_name, description, entry_type, status, host, auth_boundary, trigger_type, owner, launch_url, repo_url, runbook_url, source_of_truth_note, sort_order)
-select c.id, 'outbound', 'Outbound Engine', 'sales-engine', 'Sequenced outreach with an approval step.', 'launchable'::basecamp.entry_type, 'coming_soon'::basecamp.entry_status, 'vercel'::basecamp.entry_host, 'platform_auth'::basecamp.entry_auth_boundary, 'user'::basecamp.entry_trigger_type, 'Sales', 'https://outbound.example.com', 'https://github.com/example-org/outbound-engine', null, 'Launch pencilled for next quarter.', 30
+insert into basecamp.entries (category_id, slug, display_name, technical_name, description, entry_type, status, host, auth_boundary, trigger_type, owner, launch_url, repo_url, runbook_url, source_of_truth_note, sort_order, nav_group)
+select c.id, 'outbound', 'Outbound Engine', 'sales-engine', 'Sequenced outreach with an approval step.', 'launchable'::basecamp.entry_type, 'coming_soon'::basecamp.entry_status, 'vercel'::basecamp.entry_host, 'platform_auth'::basecamp.entry_auth_boundary, 'user'::basecamp.entry_trigger_type, 'Sales', 'https://outbound.example.com', 'https://github.com/example-org/outbound-engine', null, 'Launch pencilled for next quarter.', 30, 'operations'::basecamp.nav_group
   from basecamp.categories c where c.slug = 'core-internal'
 on conflict (slug) do nothing;
 
-insert into basecamp.entries (category_id, slug, display_name, technical_name, description, entry_type, status, host, auth_boundary, trigger_type, owner, launch_url, repo_url, runbook_url, source_of_truth_note, sort_order)
-select c.id, 'status-board', 'Status Board', 'status-board', 'Uptime and incident status for the services the team runs.', 'launchable'::basecamp.entry_type, 'active'::basecamp.entry_status, 'vercel'::basecamp.entry_host, 'platform_auth'::basecamp.entry_auth_boundary, 'cron'::basecamp.entry_trigger_type, 'Platform', 'https://status.example.com', null, 'https://handbook.example.com/runbooks/status', 'Provenance: unconfirmed since the last reorg.', 40
+insert into basecamp.entries (category_id, slug, display_name, technical_name, description, entry_type, status, host, auth_boundary, trigger_type, owner, launch_url, repo_url, runbook_url, source_of_truth_note, sort_order, nav_group)
+select c.id, 'status-board', 'Status Board', 'status-board', 'Uptime and incident status for the services the team runs.', 'launchable'::basecamp.entry_type, 'active'::basecamp.entry_status, 'vercel'::basecamp.entry_host, 'platform_auth'::basecamp.entry_auth_boundary, 'cron'::basecamp.entry_trigger_type, 'Platform', 'https://status.example.com', null, 'https://handbook.example.com/runbooks/status', 'Provenance: unconfirmed since the last reorg.', 40, 'operations'::basecamp.nav_group
   from basecamp.categories c where c.slug = 'core-internal'
 on conflict (slug) do nothing;
 

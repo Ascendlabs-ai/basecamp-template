@@ -2,17 +2,16 @@
 .env.*
 !.env.example
 !.env.local.example
-MEMORY.md
-data-export/
 node_modules/
 .next/
 dist/
 build/
 .DS_Store
 Thumbs.db
+
+# Local agent/tooling scratch. Harmless if you use none of it.
 scratchpad/
 .claude/settings.local.json
-.naysayer-result.json
 
 # Project-specific
 /.pnp

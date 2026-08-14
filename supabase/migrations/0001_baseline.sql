@@ -13,13 +13,16 @@
 -- does not run here. Do not read it as a checked invariant.
 --
 -- Hand edits applied to this generated file, which must be RE-APPLIED on any
--- regeneration: the PG17-only `SET transaction_timeout` was removed (it aborts
--- on PG15/16), two enum labels naming the originating organisation's own
+-- regeneration: the PG17-only `SET transaction_timeout` was removed and the
+-- PG17-only `MAINTAIN` privilege was stripped from four GRANTs (both abort on
+-- PG15/16 -- `unrecognized privilege type "maintain"`), two enum labels naming
+-- the originating organisation's own
 -- infrastructure were renamed to `platform_auth`/`external_auth`, and COMMENT
 -- strings naming that organisation, its issue tracker or its migration versions
 -- were rewritten. See supabase/README.md -> "Regenerating this baseline".
 --
 -- SOURCE-MIGRATION-VERSION: 20260813100600
+-- GENERATED-ON: 2026-08-14
 --
 -- PostgreSQL database dump
 --
@@ -166,7 +169,7 @@ CREATE TYPE basecamp.nav_group AS ENUM (
 -- Name: TYPE nav_group; Type: COMMENT; Schema: basecamp; Owner: -
 --
 
-COMMENT ON TYPE basecamp.nav_group IS 'Sidebar section for a launchable entry. Presentation only — confers no access. Order is marketing, sales, operations, external.';
+COMMENT ON TYPE basecamp.nav_group IS 'Sidebar section for a launchable entry. Presentation only — confers no access. Order is marketing, sales, deal_sourcing, operations, external — keep src/types/admin.ts NAV_GROUP_ORDER in the same sequence.';
 
 
 --
@@ -190,7 +193,7 @@ $$;
 -- Name: FUNCTION can_read_category(p_category_id uuid); Type: COMMENT; Schema: basecamp; Owner: -
 --
 
-COMMENT ON FUNCTION basecamp.can_read_category(p_category_id uuid) IS 'A category is visible only if it contains at least one entry the caller can read. Delegates to can_read_entry so the union rule is defined exactly once.';
+COMMENT ON FUNCTION basecamp.can_read_category(p_category_id uuid) IS 'A category is visible only if it contains at least one entry the caller can read. NOTE: not referenced by any policy — the policies call category_has_grant() instead. Kept as a readable statement of the rule and for RPC use; if you change the union rule, change it here too.';
 
 
 --
@@ -250,7 +253,7 @@ $$;
 -- Name: FUNCTION category_has_grant(p_category_id uuid); Type: COMMENT; Schema: basecamp; Owner: -
 --
 
-COMMENT ON FUNCTION basecamp.category_has_grant(p_category_id uuid) IS 'Set-based sibling of has_grant: does this category contain at least one entry the caller may read, individually or through their type? The entry-existence test is load-bearing — a grant on an empty category must show nothing (PART 6 asserts it). No role check; the policy supplies that as an InitPlan. MIRRORED IN src/lib/adminAccess.ts — change both.';
+COMMENT ON FUNCTION basecamp.category_has_grant(p_category_id uuid) IS 'Set-based sibling of has_grant: does this category contain at least one entry the caller may read, individually or through their type? The entry-existence test is load-bearing — a grant on an empty category must show nothing. No role check; the policy supplies that as an InitPlan. MIRRORED IN src/lib/adminAccess.ts — change both.';
 
 
 --
@@ -742,7 +745,7 @@ COMMENT ON COLUMN basecamp.entries.owner IS 'Free text: the person or team respo
 -- Name: COLUMN entries.sort_order; Type: COMMENT; Schema: basecamp; Owner: -
 --
 
-COMMENT ON COLUMN basecamp.entries.sort_order IS 'Not unique and defaults to 0, so it is not a total order on its own. Always order by (sort_order, slug) — an unstable sort makes the markdown export diff spuriously on every run.';
+COMMENT ON COLUMN basecamp.entries.sort_order IS 'Not unique and defaults to 0, so it is not a total order on its own. Always order by (sort_order, slug) — an unstable sort makes any generated inventory diff spuriously on every run.';
 
 
 --
@@ -756,7 +759,7 @@ COMMENT ON COLUMN basecamp.entries.last_verified_at IS 'When this row was last c
 -- Name: COLUMN entries.slug; Type: COMMENT; Schema: basecamp; Owner: -
 --
 
-COMMENT ON COLUMN basecamp.entries.slug IS 'Stable kebab-case identifier. Survives a display_name rename; the upsert conflict target for seeding and the join key for the markdown export.';
+COMMENT ON COLUMN basecamp.entries.slug IS 'Stable kebab-case identifier. Survives a display_name rename; the upsert conflict target for seeding, and the natural join key for anything generated from this catalog.';
 
 
 --
@@ -813,7 +816,7 @@ COMMENT ON COLUMN basecamp.member_types.is_admin IS 'Marks a type as administrat
 -- Name: COLUMN member_types.is_system; Type: COMMENT; Schema: basecamp; Owner: -
 --
 
-COMMENT ON COLUMN basecamp.member_types.is_system IS 'Seeded types the app refers to by slug. Delete is blocked by a trigger; rename is not, since display names are cosmetic.';
+COMMENT ON COLUMN basecamp.member_types.is_system IS 'Marks a type as structural, so a trigger refuses to delete it. Rename is not blocked, since display names are cosmetic. NOTE: this template seeds no types at all, so nothing is is_system until you set it.';
 
 
 --
@@ -1599,7 +1602,7 @@ GRANT ALL ON SEQUENCE basecamp.access_audit_id_seq TO service_role;
 -- Name: TABLE access_grants; Type: ACL; Schema: basecamp; Owner: -
 --
 
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN ON TABLE basecamp.access_grants TO service_role;
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER ON TABLE basecamp.access_grants TO service_role;
 GRANT SELECT,INSERT,DELETE ON TABLE basecamp.access_grants TO authenticated;
 
 
@@ -1631,7 +1634,7 @@ GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE basecamp.member_types TO authenticate
 -- Name: TABLE members; Type: ACL; Schema: basecamp; Owner: -
 --
 
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN ON TABLE basecamp.members TO service_role;
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER ON TABLE basecamp.members TO service_role;
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE basecamp.members TO authenticated;
 
 
@@ -1647,7 +1650,7 @@ GRANT SELECT ON TABLE basecamp.super_admins TO authenticated;
 -- Name: TABLE type_grants; Type: ACL; Schema: basecamp; Owner: -
 --
 
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN ON TABLE basecamp.type_grants TO service_role;
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER ON TABLE basecamp.type_grants TO service_role;
 GRANT SELECT,INSERT,DELETE ON TABLE basecamp.type_grants TO authenticated;
 
 
@@ -1662,7 +1665,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA basecamp GRANT ALL ON SEQUE
 -- Name: DEFAULT PRIVILEGES FOR TABLES; Type: DEFAULT ACL; Schema: basecamp; Owner: -
 --
 
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA basecamp GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLES TO service_role;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA basecamp GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,UPDATE ON TABLES TO service_role;
 
 
 --

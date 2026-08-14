@@ -16,17 +16,21 @@ import type { ShellNavItem } from "@/types/shell";
 export const dynamic = "force-dynamic";
 
 /**
- * Sidebar navigation is the design's four groups, driven by `entries.nav_group`.
+ * Sidebar navigation is driven by `entries.nav_group`, NOT by category.
  *
- * This replaces category-driven nav. The earlier version grouped by
- * `basecamp.categories` because no column backed the design's
- * Marketing / Sales / Operations / External — the `nav_group` column
- * added one, so the sidebar now matches the handoff instead of approximating it.
+ * Grouping the sidebar by `basecamp.categories` is the obvious alternative and
+ * it is deliberately not what happens: categories are a taxonomy of what things
+ * ARE, and a launcher wants a taxonomy of what people DO. `nav_group` exists so
+ * the two can disagree without either being wrong.
  *
  * Only LAUNCHABLE entries with a `nav_group` appear. Everything else — the
- * reference rows, the catalog-only rows, and the five launchables the design
- * never placed — lives in the home catalog and nowhere else. A sidebar of
- * things you cannot open is a table of contents, not navigation.
+ * reference rows, the catalog-only rows, and any launchable you have not placed
+ * in a group — lives in the home catalog and nowhere else. A sidebar of things
+ * you cannot open is a table of contents, not navigation.
+ *
+ * Consequence worth knowing on a fresh install: an entry with no `nav_group` is
+ * invisible here no matter how launchable it is. If something is missing from
+ * the sidebar, that column is the first thing to check.
  */
 export default async function ShellLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient();

@@ -5,6 +5,7 @@ import Chip from "@mui/material/Chip";
 import Paper from "@mui/material/Paper";
 import Typography from "@mui/material/Typography";
 
+import { describeAuditActor, describeAuditRow, formatAuditTime } from "@/lib/auditText";
 import type { AuditRow } from "@/types/admin";
 
 /**
@@ -22,60 +23,6 @@ import type { AuditRow } from "@/types/admin";
  * renders as a distinct label rather than a blank cell — the absence of a
  * signed-in actor is information, not missing data.
  */
-
-/** Stable, locale-independent, and readable at a glance. */
-function when(iso: string): string {
-  const d = new Date(iso);
-  // Explicit locale AND timeZone. `undefined` means "the runtime's" — Node on
-  // the server, the browser on the client — so the two render different strings
-  // and React discards the subtree as a hydration mismatch. EntryDetailPanel
-  // already pins "en-GB" for exactly this reason.
-  return d.toLocaleString("en-GB", {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "UTC",
-  });
-}
-
-/** What the row is about, in one phrase. */
-function describe(row: AuditRow): string {
-  // `members` is the one source whose object is a TYPE, not an app. Without its
-  // own branch it falls through and renders "granted Client to someone", which
-  // is indistinguishable from granting an entry that happens to be called
-  // Client — the two most different events on this screen reading identically.
-  if (row.source_table === "members") {
-    const who = row.subject_label ?? "someone";
-    const type = row.object_label ?? "a type that no longer exists";
-    return row.action === "grant"
-      ? `put ${who} on the ${type} type`
-      : `removed ${who} from the ${type} type`;
-  }
-  // 'unknown' means a trigger is attached to a table this app does not model.
-  // The row exists precisely so that is noticeable, so it must not render as an
-  // ordinary grant.
-  if (row.source_table === "unknown") {
-    return "made a change on an unrecognised table — check the audit triggers";
-  }
-  if (row.source_table === "super_admins") {
-    return row.action === "grant"
-      ? `made ${row.subject_label ?? "someone"} an administrator`
-      : `removed ${row.subject_label ?? "someone"} as an administrator`;
-  }
-  const verb = row.action === "grant" ? "granted" : "revoked";
-  const object = row.object_label ?? "something that no longer exists";
-  const kind = row.object_kind === "category" ? "the whole category" : "";
-  const who =
-    row.source_table === "type_grants"
-      ? `the ${row.subject_label ?? "unknown"} type`
-      : (row.subject_label ?? "someone");
-  return `${verb} ${kind} ${object} ${row.action === "grant" ? "to" : "from"} ${who}`.replace(
-    /\s+/g,
-    " ",
-  );
-}
 
 export default function AuditLog({ rows, error }: { rows: AuditRow[]; error: string | null }) {
   // An unreadable log says so, rather than rendering as an empty one. Those two
@@ -169,15 +116,15 @@ export default function AuditLog({ rows, error }: { rows: AuditRow[]; error: str
               />
               <Typography variant="body2" sx={{ flex: 1, minWidth: 220 }}>
                 <Box component="span" sx={{ fontWeight: 600 }}>
-                  {row.actor_email ?? "System"}
+                  {describeAuditActor(row.actor_email)}
                 </Box>{" "}
-                {describe(row)}
+                {describeAuditRow(row)}
               </Typography>
               <Typography
                 variant="caption"
                 sx={{ color: "text.secondary", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}
               >
-                <time dateTime={row.occurred_at}>{when(row.occurred_at)}</time>
+                <time dateTime={row.occurred_at}>{formatAuditTime(row.occurred_at)}</time>
               </Typography>
             </Box>
           ))}

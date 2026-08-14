@@ -191,8 +191,11 @@ export default function AccessAdmin({
    * paint the stale list for a frame first).
    */
   // Server-owned, like `grants`: the rows are written by database triggers, so
-  // there is no optimistic local version to keep — a change becomes visible when
-  // the server component re-runs, which router.refresh() already triggers.
+  // there is no optimistic local version to keep.
+  //
+  // It does NOT follow that the list stays current on its own. The grant paths
+  // deliberately do not refresh the route on success, so this state is re-read
+  // explicitly when the Audit tab is entered — see `setView`.
   const [audit, setAudit] = useState<AuditRow[]>(initialAudit);
 
   const [snapshot, setSnapshot] = useState(initialGrants);
@@ -238,6 +241,45 @@ export default function AccessAdmin({
       // Same route, view state in the URL, so a view is linkable — the design
       // asks for exactly this.
       router.replace(`/admin/access${params.toString() ? `?${params}` : ""}`, { scroll: false });
+
+      // Re-read the audit log on entry to the Audit tab.
+      //
+      // This is NOT belt-and-braces. `audit` arrives from the server component
+      // and the grant paths deliberately do NOT call router.refresh() on
+      // success (see the "NO blanket refresh here" note in `run`) — so without
+      // this, you grant someone access, switch to Audit, and the change you
+      // just made is absent. The log is written by database triggers, so the
+      // row certainly exists; only this screen was showing a stale copy, which
+      // is the worst possible failure for an audit surface: it reads as
+      // "nothing was recorded".
+      //
+      // Fetching here rather than refreshing the route keeps the existing
+      // decision intact and costs one query on a tab the user just asked for.
+      if (next !== "audit") return;
+      // Same per-callback pattern as the mutation handlers below;
+      // `createBrowserClient` memoizes, so this is not a new client.
+      const supabase = createClient();
+      void supabase
+        .from("access_audit")
+        .select(
+          "id, occurred_at, actor_email, action, source_table, subject_label, object_kind, object_label",
+        )
+        // Same ordering as the server component, and `id` is not decoration: a
+        // member type change emits two rows in one transaction and occurred_at
+        // defaults to the TRANSACTION timestamp, so the pair ties.
+        .order("occurred_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(200)
+        .then(({ data, error: auditFetchError }) => {
+          // A failed refresh leaves the rows already on screen rather than
+          // blanking them. Stale-but-labelled beats empty-and-wrong here, and
+          // the server-rendered error slot already covers a load-time failure.
+          if (auditFetchError) {
+            console.error("[basecamp] audit refresh failed:", auditFetchError.message);
+            return;
+          }
+          if (data) setAudit(data as AuditRow[]);
+        });
     },
     [router, searchParams],
   );
@@ -269,10 +311,17 @@ export default function AccessAdmin({
 
       const settled = work()
         .then(
-          (message) => ({ message, timedOut: false }),
+          (message) => ({ message, timedOut: false, threw: false }),
           (cause) => {
             console.error("[basecamp] admin mutation threw:", cause);
-            return { message: "Could not save the change. Reloading the current state.", timedOut: false };
+            return {
+              message: "Could not save the change. Reloading the current state.",
+              timedOut: false,
+              // Distinguished from an ordinary refusal: a returned message is a
+              // deliberate "no" from a path that has already put the screen
+              // right, whereas a THROW means local state may be mid-flight.
+              threw: true,
+            };
           },
         )
         .finally(release);
@@ -280,11 +329,21 @@ export default function AccessAdmin({
       const timer = deadline(WRITE_TIMEOUT_MS);
       const outcome = await Promise.race([
         settled,
-        timer.promise.then((message) => ({ message, timedOut: true })),
+        timer.promise.then((message) => ({ message, timedOut: true, threw: false })),
       ]);
       timer.cancel();
 
       if (outcome.message) setError(outcome.message);
+      if (outcome.threw) {
+        // The message says "Reloading the current state", so reload. Without
+        // this it was a promise the code did not keep: a throw landing after an
+        // optimistic insert left the fabricated grant on screen indefinitely
+        // while the user read that a reload was under way — a stale "granted",
+        // which this file elsewhere identifies as the more dangerous direction
+        // to be wrong in.
+        router.refresh();
+        return false;
+      }
       if (outcome.timedOut) {
         // The request is still in flight and its own handlers may still mutate
         // state. Reload rather than let the screen move under a user who was
@@ -557,7 +616,7 @@ export default function AccessAdmin({
         // service it will also answer 200 for an address it silently will not
         // deliver to — built-in mail reaches organisation members only, ~2/hour.
         // Claiming delivery here would be claiming something this app cannot
-        // observe. See supabase/template/README.md → Email.
+        // observe. See supabase/README.md → Email.
         setNotice(`Password link sent to ${person.email}. If they do not receive it, check the project's SMTP settings — the built-in email service only reaches your Supabase organisation's own members.`);
         return null;
       }),

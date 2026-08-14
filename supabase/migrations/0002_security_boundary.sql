@@ -304,7 +304,85 @@ begin
     raise exception '% view(s) in basecamp bypass RLS — create them WITH (security_invoker = true)', n;
   end if;
 
-  raise notice 'security boundary asserted: owners pinned, definers hardened, anon shut out, trust-root and audit privileges and guards verified, no owner-rights views, app role able to reach the schema';
+  -- ---------------------------------------------------------------------
+  -- COMPLETENESS. Everything above this point asserts NEGATIVE facts —
+  -- `anon` holds nothing, `service_role` does not hold UPDATE, no view runs
+  -- with owner rights. Negative facts all pass vacuously on a schema that was
+  -- never fully created, which is not a theoretical concern:
+  --
+  --   0001 shipped for a while with a PG17-only privilege in four GRANTs. On
+  --   PG16 those four statements failed. psql without ON_ERROR_STOP kept going,
+  --   and THIS FILE then committed and printed "security boundary asserted"
+  --   against a database where service_role could not read three tables and the
+  --   default ACL did not exist. Proven by execution on PostgreSQL 16.15.
+  --
+  -- The file's whole claim is "if it commits, the boundary holds". That claim
+  -- was false whenever a 0001 statement failed silently. These checks close it:
+  -- count what must exist, and assert the POSITIVE grants the app cannot run
+  -- without.
+  --
+  -- Counts are floors (>=), not equalities. A client who adds a table should not
+  -- have to edit this file; a client who is MISSING one has a broken install.
+  -- ---------------------------------------------------------------------
+  select count(*) into n from pg_tables where schemaname = 'basecamp';
+  if n < 8 then
+    raise exception 'basecamp has % table(s), expected at least 8 — 0001 did not fully apply. Re-run it with: psql -v ON_ERROR_STOP=1 --single-transaction', n;
+  end if;
+
+  select count(*) into n from pg_policies where schemaname = 'basecamp';
+  if n < 26 then
+    raise exception 'basecamp has % RLS policies, expected at least 26 — 0001 did not fully apply', n;
+  end if;
+
+  select count(*) into n
+    from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+   where ns.nspname = 'basecamp';
+  if n < 13 then
+    raise exception 'basecamp has % function(s), expected at least 13 — 0001 did not fully apply', n;
+  end if;
+
+  select count(*) into n
+    from pg_trigger t
+    join pg_class c on c.oid = t.tgrelid
+    join pg_namespace ns on ns.oid = c.relnamespace
+   where ns.nspname = 'basecamp' and not t.tgisinternal;
+  if n < 16 then
+    raise exception 'basecamp has % trigger(s), expected at least 16 — 0001 did not fully apply', n;
+  end if;
+
+  -- The positive grants. Without these the app fails at runtime with
+  -- `permission denied`, which reads as a code bug rather than a bad install.
+  -- `authenticated` is the only role the app ever connects as.
+  if not (has_table_privilege('authenticated', 'basecamp.categories',   'select')
+      and has_table_privilege('authenticated', 'basecamp.member_types', 'select')
+      and has_table_privilege('authenticated', 'basecamp.members',      'select')
+      and has_table_privilege('authenticated', 'basecamp.access_grants','select')
+      and has_table_privilege('authenticated', 'basecamp.type_grants',  'select')
+      and has_table_privilege('authenticated', 'basecamp.access_audit', 'select')) then
+    raise exception 'authenticated is missing SELECT on one or more basecamp tables — the admin screens cannot render';
+  end if;
+
+  -- The admin screens issue these writes directly from the browser under RLS.
+  if not (has_table_privilege('authenticated', 'basecamp.access_grants', 'insert')
+      and has_table_privilege('authenticated', 'basecamp.access_grants', 'delete')
+      and has_table_privilege('authenticated', 'basecamp.type_grants',   'insert')
+      and has_table_privilege('authenticated', 'basecamp.type_grants',   'delete')
+      and has_table_privilege('authenticated', 'basecamp.members',       'insert')
+      and has_table_privilege('authenticated', 'basecamp.members',       'update')
+      and has_table_privilege('authenticated', 'basecamp.members',       'delete')) then
+    raise exception 'authenticated is missing a write privilege the admin screens need — granting access will fail with permission denied';
+  end if;
+
+  -- Both default-ACL rows (TABLES and SEQUENCES). The TRUNCATE assertion above
+  -- reads the TABLES row; if that row is absent the assertion passes on nothing.
+  select count(*) into n
+    from pg_default_acl d join pg_namespace ns on ns.oid = d.defaclnamespace
+   where ns.nspname = 'basecamp';
+  if n < 2 then
+    raise exception 'basecamp has % default-ACL row(s), expected 2 — 0001 did not fully apply, and the TRUNCATE default-privilege assertion above passed vacuously', n;
+  end if;
+
+  raise notice 'security boundary asserted: schema complete, owners pinned, definers hardened, anon shut out, app grants present, trust-root and audit privileges and guards verified, no owner-rights views';
 end $$;
 
 commit;

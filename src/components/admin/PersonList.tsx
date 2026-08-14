@@ -119,10 +119,17 @@ export default function PersonList({
             : "No type";
           // "Joined 12 Mar 2026". The roster's job is answering who is on this
           // project and when they arrived, which an email alone cannot.
+          //
+          // Explicit locale AND timeZone, for the reason AuditLog.when() spells
+          // out: this list is server-rendered and then hydrated, and an omitted
+          // timeZone means "the runtime's" — UTC on the server, the visitor's in
+          // the browser — so a created_at near midnight renders a different day
+          // on each side and React discards the subtree.
           const joined = new Date(p.created_at).toLocaleDateString("en-GB", {
             year: "numeric",
             month: "short",
             day: "numeric",
+            timeZone: "UTC",
           });
           return (
             <Box component="li" key={p.id}>

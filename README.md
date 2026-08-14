@@ -72,14 +72,15 @@ Four places, by design:
 
 | What | Where |
 |---|---|
-| Product name, org name, home heading, tagline | `src/lib/brand.ts` |
+| Product name, org name, home heading, tagline | `src/lib/brand.ts` — the heading is composed from `ORG_NAME`, so setting that one constant changes the home page |
 | The logo mark | `src/components/Logo.tsx` (a neutral placeholder — swap the inline SVG, or render your own asset) |
 | Colours, type, the dark sidebar | `src/theme/theme.ts` |
 | Browser/app icons | `src/app/icon.png`, `src/app/apple-icon.png`, `public/favicon-*.png` — neutral placeholders, replace with your own |
 
 `src/lib/logoUsage.test.ts` enforces that the brand stays in those files: any
-file under `src/` that hardcodes the product name, or reaches for a logo asset
-directly, fails the suite. That guard exists because in the app this was
+`.ts` or `.tsx` file under `src/` that hardcodes the product name, or reaches for
+a logo asset directly, fails the suite. (Test files themselves are exempt — they
+are not a user-visible surface.) That guard exists because in the app this was
 extracted from, two surfaces had each inlined their own logo and pinned
 themselves to light mode.
 
@@ -98,9 +99,12 @@ edit covered everything.
 | Test | `npm test` |
 | Build | `npm run build` |
 
-Tests are Node's built-in runner with type stripping — **Node 22.6 or newer**.
-They cover the pure logic: access resolution, catalog shaping, redirect safety,
-and the brand guard. They do not need a database.
+Tests are Node's built-in runner with type stripping — **Node 22.6 or newer**,
+enforced by `engines` in `package.json`. They cover the pure logic: access
+resolution, catalog shaping, redirect safety, audit-log phrasing, the brand
+guard, and a template-hygiene guard that fails if the SQL baseline picks up a
+psql meta-command or a PostgreSQL-17-only construct. They do not need a
+database.
 
 **Nothing here tests the database**, which is where 100% of the access
 enforcement lives. What you get instead is `0002_security_boundary.sql`, which

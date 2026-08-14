@@ -134,16 +134,17 @@ export type NavGroup = "marketing" | "sales" | "deal_sourcing" | "operations" | 
 /**
  * The sidebar order. Groups render in this sequence.
  *
- * The first four are the design handoff's. `deal_sourcing` is not from the
- * handoff — it was added 2026-08-05 (the maintainer) when a new app got a live URL,
- * ahead of government-grant work landing in that app. It sits after Sales
- * because sourcing precedes selling; the enum in
- * the enum in 0001_baseline.sql declares the same position, so
- * this array and `order by nav_group` cannot disagree.
+ * `deal_sourcing` sits after Sales because sourcing precedes selling; the enum
+ * in 0001_baseline.sql declares the same position, so this array and
+ * `order by nav_group` cannot disagree.
+ *
+ * These are defaults, not a fixed taxonomy. To change them, edit the enum with
+ * `ALTER TYPE basecamp.nav_group ...` and keep this array in the same order.
  *
  * This is the render order, not the source of truth for which groups exist —
  * that is basecamp.nav_group. A group named here with no readable entries
- * renders nothing at all, which is how `sales` has behaved since day one.
+ * renders nothing at all rather than an empty heading, so on a fresh install
+ * every group is silent until you place entries in it.
  */
 export const NAV_GROUP_ORDER: readonly NavGroup[] = [
   "marketing",

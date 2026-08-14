@@ -14,29 +14,13 @@ administrator. Nothing else.
 > `supabase db push`. If you would rather manage them with the CLI, rename them
 > to timestamped form first.
 
-### Regenerating this baseline
-
-You will not normally need to. It matters only if you take a fresh squash from
-the private upstream this template was extracted from — in which case the
-generated dump carries hand edits that must be **re-applied**, because the
-generator does not make them:
-
-- **Remove `SET transaction_timeout = 0;`.** pg_dump 17 emits it and it does not
-  exist before PG17; an unknown `SET` aborts the whole script on a PG15 or PG16
-  project.
-- **Rename the two `entry_auth_boundary` labels** that name the originating
-  organisation's own infrastructure back to `platform_auth` / `external_auth`.
-  Nothing references them — no DEFAULT, no CHECK, no function body — so the
-  rename is safe, but verify that before doing it.
-- **Rewrite the `COMMENT ON` strings** that name that organisation, its issue
-  tracker, or its migration versions. These are prose with no schema effect, but
-  they land permanently in your database.
-
-`0001`'s own header repeats this list. Also note that the
-`SOURCE-MIGRATION-VERSION` stamp in that file is **provenance only** here:
-nothing in this repository verifies it. The staleness guard that does lives in
-the private upstream and does not run against this repo, so do not read the
-stamp as a checked invariant.
+> **Where these files come from.** `0001` is a `pg_dump` squash of a private
+> upstream application; regenerating it is that project's job, not yours, and is
+> documented in [`MAINTAINING.md`](../MAINTAINING.md). Two headers in `0001`
+> record its provenance — `SOURCE-MIGRATION-VERSION` (which upstream migration it
+> was squashed from) and `GENERATED-ON` (the date). **Both are provenance only:
+> nothing in this repository verifies them**, so treat the date as "how old this
+> schema is", not as a guarantee it is current.
 
 ---
 
@@ -57,8 +41,23 @@ existing entry.
 
 ### 1. Apply the two files, in order
 
-SQL Editor, or `psql "$DATABASE_URL" -f …`. `0002` ends by asserting the whole
-security boundary, so if it commits without raising, the boundary holds:
+Paste them into the SQL Editor, which stops at the first error on its own — or,
+from a terminal, **use these flags and not a bare `-f`**:
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -f supabase/migrations/0001_baseline.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/0002_security_boundary.sql
+```
+
+`psql` without `ON_ERROR_STOP=1` prints an error and **keeps going**, leaving a
+half-created schema that looks installed. That is not hypothetical: an earlier
+version of `0001` used a PG17-only privilege, and on PG16 four `GRANT`s failed
+while the run reported success. `0002` now refuses in that situation (it counts
+what must exist and checks the grants the app needs), but the flags are still
+the difference between one clear failure and a database you have to inspect.
+
+`0002` ends by asserting the whole security boundary, so if it commits without
+raising, the boundary holds:
 
 - every `basecamp` table is owned by `postgres`, has RLS on, and does not have
   FORCE RLS (which would make the definer helpers recurse against their own
@@ -83,7 +82,12 @@ security boundary, so if it commits without raising, the boundary holds:
   no TRUNCATE — asserted against `pg_default_acl` directly, because a list of
   today's tables can only ever name today's;
 - no view in `basecamp` runs with owner rights — since PG15 a view without
-  `security_invoker` reads straight past RLS.
+  `security_invoker` reads straight past RLS;
+- **the schema is actually complete** — the expected tables, policies, functions,
+  triggers and both default-ACL rows are present, and `authenticated` holds the
+  positive grants the app needs. Everything above this line is a *negative* fact
+  ("`anon` holds nothing"), and negative facts pass on a schema that was never
+  fully created.
 
 None of that is a description of intent. Each item is an assertion inside `0002`
 that raises and rolls the whole file back if it does not hold; the assertions
@@ -253,10 +257,22 @@ No foreign keys, and labels snapshotted at write time: an audit row must survive
 deletion of everything it names. With an FK, deleting an app or an account would
 silently delete the evidence that access to it was ever granted.
 
-> **Known gap, stated rather than discovered.** The snapshot labels protect
-> against the *row* disappearing, but a cascade delete still takes the audit
-> row's referents with it in some paths — including the ordinary **Delete type**
-> button. The audit row survives; some of what it names may not resolve.
+> **Known gap, measured rather than hedged.** The design intends labels to be
+> snapshotted, but `log_access_change()` is an `AFTER` trigger that resolves them
+> by *lookup* — so on a **cascade** delete the parent row is already gone and the
+> label is **never written at all**. Confirmed by execution on two paths a client
+> will actually take:
+>
+> - deleting an account in the Supabase dashboard (`access_grants.user_id →
+>   auth.users ON DELETE CASCADE`) writes revoke rows with `subject_label` NULL —
+>   *what* was revoked is recorded, *from whom* is not;
+> - the ordinary **Delete type** button does the same to `type_grants`.
+>
+> The audit row survives, which is the point of having no foreign keys, and
+> `subject_id` is still recorded — but there is no longer anything to resolve it
+> against. Direct DELETEs and every in-app grant/revoke are unaffected and label
+> correctly. Closing this properly means snapshotting the labels onto the grant
+> tables at write time; it is not fixed here.
 
 ---
 

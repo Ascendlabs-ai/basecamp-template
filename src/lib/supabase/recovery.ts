@@ -30,21 +30,44 @@ import { SUPABASE_ANON_KEY, SUPABASE_URL } from "./env";
  */
 
 /**
+ * BOTH factories return a lazily-created MODULE SINGLETON, and both pass their
+ * own `storageKey`. Neither is decoration.
+ *
+ * A `GoTrueClient` registers a `visibilitychange` listener on `window` during
+ * `_initialize()`, and removes it only on `signOut`/`stopAutoRefresh`/dispose —
+ * none of which this app calls. So a factory that returns a NEW client per call
+ * leaks one permanent window listener per call, each retaining its client. The
+ * sender is invoked from a click handler, so "per call" means per button press.
+ *
+ * The `storageKey` matters for a second reason: auth-js keys its
+ * "Multiple GoTrueClient instances detected" warning off a per-storageKey
+ * instance counter. Left at the default, these clients share the app client's
+ * key and every one of them prints that warning — on the admin screen, which is
+ * the last place a scary console message helps anyone. Distinct keys keep the
+ * counters separate. Nothing is actually written under either key, because
+ * `persistSession: false` routes storage to an in-memory adapter.
+ */
+
+/**
  * Sender. Used by the admin screen.
  *
  * `persistSession: false` and `detectSessionInUrl: false` are load-bearing: this
  * client must never touch the administrator's own session or try to consume the
  * URL of the page it is called from. It exists to make one unauthenticated POST.
  */
+let sender: ReturnType<typeof createSupabaseClient> | undefined;
+
 export function createRecoverySender() {
-  return createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  sender ??= createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
       flowType: "implicit",
       persistSession: false,
       autoRefreshToken: false,
       detectSessionInUrl: false,
+      storageKey: "sb-recovery-sender",
     },
   });
+  return sender;
 }
 
 /**
@@ -60,13 +83,17 @@ export function createRecoverySender() {
  * just chose — so the server components see a session the ordinary way, and
  * there is no second, divergent session store to reason about.
  */
+let receiver: ReturnType<typeof createSupabaseClient> | undefined;
+
 export function createRecoveryReceiver() {
-  return createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  receiver ??= createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
       flowType: "implicit",
       persistSession: false,
       autoRefreshToken: false,
       detectSessionInUrl: true,
+      storageKey: "sb-recovery-receiver",
     },
   });
+  return receiver;
 }

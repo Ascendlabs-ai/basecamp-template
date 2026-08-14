@@ -34,7 +34,7 @@ const BY_SLUG: Record<string, SvgIconComponent> = {
   dashboard: BarChartRoundedIcon,
   "marketing-dashboard": BarChartRoundedIcon,
   crm: BusinessCenterRoundedIcon,
-  "client-tracker": BusinessCenterRoundedIcon,
+  "account-book": BusinessCenterRoundedIcon,
   docs: MenuBookRoundedIcon,
   handbook: MenuBookRoundedIcon,
   "knowledge-base": MenuBookRoundedIcon,

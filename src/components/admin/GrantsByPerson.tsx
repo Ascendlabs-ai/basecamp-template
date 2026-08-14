@@ -122,10 +122,12 @@ export default function GrantsByPerson({
             <Typography sx={{ fontSize: 13, fontWeight: 600 }}>{person.email}</Typography>
             <Typography variant="caption" sx={{ color: "text.secondary" }}>
               Joined{" "}
+              {/* timeZone pinned for the hydration reason in AuditLog.when(). */}
               {new Date(person.created_at).toLocaleDateString("en-GB", {
                 year: "numeric",
                 month: "long",
                 day: "numeric",
+                timeZone: "UTC",
               })}
               {person.is_super_admin ? " · Administrator" : ""}
             </Typography>

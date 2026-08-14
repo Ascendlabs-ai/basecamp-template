@@ -14,11 +14,17 @@ import { test } from "node:test";
  * which left Logo.tsx dead and pinned both surfaces to light mode. That is the
  * class of regression guarded here.
  */
+/**
+ * `.ts` as well as `.tsx`. Scanning components only was a guard that read as
+ * coverage while missing half of `src/` — every type module, `catalog.ts`,
+ * `adminAccess.ts` and `entryMeta.ts` were invisible to it, and the README
+ * claims the check covers "any file under src/".
+ */
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const full = path.join(dir, name);
     if (statSync(full).isDirectory()) return walk(full);
-    return full.endsWith(".tsx") ? [full] : [];
+    return /\.tsx?$/.test(full) ? [full] : [];
   });
 }
 
@@ -76,6 +82,12 @@ test("the product name comes from brand.ts, not hardcoded in components or pages
 
   for (const file of walk(SRC)) {
     if (file.endsWith(LOGO_COMPONENT)) continue;
+    // Test files are not a user-visible surface, and this guard's own prose has
+    // to quote the historical hardcode in order to explain itself. Widening the
+    // sweep to `.ts` made it match its own doc comment — a self-inflicted
+    // failure, not a leak. `brand.ts` needs no exemption: its export line
+    // contains APP_NAME and is skipped below.
+    if (/\.test\.tsx?$/.test(file)) continue;
     const lines = readFileSync(file, "utf8").split("\n");
     lines.forEach((line, i) => {
       // Skip lines that already do the right thing.
