@@ -5,9 +5,9 @@
 -- what that dump cannot carry.
 --
 -- WHY IT EXISTS. `0001_baseline.sql` is produced by `pg_dump --schema-only
--- --no-owner`. `--no-owner` is necessary — a client project's roles are not
--- the client project's own — but it drops every `alter ... owner to postgres`, and ownership
--- is not cosmetic here:
+-- --no-owner`. `--no-owner` is necessary — your project's roles are not the
+-- ones the dump was taken from — but it drops every `alter ... owner to
+-- postgres`, and ownership is not cosmetic here:
 --
 --   * A SECURITY DEFINER function runs as its OWNER. `is_super_admin()`,
 --     `has_grant()` and friends must read `basecamp.access_grants` and
@@ -41,11 +41,9 @@ begin
     select 'table' as kind, format('%I.%I', schemaname, tablename) as ident
       from pg_tables where schemaname = 'basecamp'
     union all
-    -- Views too. A view added later is the easiest way to defeat every policy
-    -- in this schema: since PG15 a view without security_invoker runs with its
-    -- OWNER's rights, and the SQL Editor creates objects as postgres — so an
-    -- ordinary-looking read model reads straight past RLS. Sweeping only
-    -- pg_tables would leave that unowned and unasserted.
+    -- Views too. Since PG15 a view without security_invoker runs with its
+    -- OWNER's rights, and the SQL Editor creates objects as postgres — so a
+    -- read model added later would read straight past every policy here.
     select 'view', format('%I.%I', schemaname, viewname)
       from pg_views where schemaname = 'basecamp'
     union all
@@ -112,12 +110,12 @@ begin
   for bad in
     select p.proname,
            p.proowner <> 'postgres'::regrole                as wrong_owner,
-           not (p.proconfig @> array['search_path=""'])     as unpinned,
+           not coalesce(p.proconfig @> array['search_path=""'], false) as unpinned,
            has_function_privilege('public', p.oid, 'execute') as public_exec
       from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
      where ns.nspname = 'basecamp' and p.prosecdef
        and (p.proowner <> 'postgres'::regrole
-            or not (p.proconfig @> array['search_path=""'])
+            or not coalesce(p.proconfig @> array['search_path=""'], false)
             or has_function_privilege('public', p.oid, 'execute'))
   loop
     detail := detail || format(E'\n    %s: wrong_owner=%s unpinned_search_path=%s public_execute=%s',
@@ -146,51 +144,167 @@ begin
     raise exception 'authenticated cannot SELECT basecamp.entries — the catalog would never render';
   end if;
 
-  -- ---------------------------------------------------------------------
-  -- The trust root's own privileges. Asserted because the README's central
-  -- claim is "authenticated is granted SELECT only" and nothing checked it:
-  -- granting authenticated insert/update/delete on super_admins used to leave
-  -- this file printing "boundary asserted" and committing clean.
-  --
-  -- UPDATE matters as much as DELETE here. There is no UPDATE policy and no
-  -- BEFORE UPDATE trigger, so a single `update super_admins set user_id = …`
-  -- reassigns the roster without changing the row count — which means the
-  -- last-row guard never fires. It is a cheaper hijack than TRUNCATE.
-  -- ---------------------------------------------------------------------
+  -- The trust root's own privileges. UPDATE matters as much as DELETE: there is
+  -- no UPDATE policy and no BEFORE UPDATE trigger on super_admins, so one
+  -- statement could reassign the roster without changing the row count — which
+  -- means the last-row guard would never fire.
   if has_table_privilege('authenticated', 'basecamp.super_admins', 'insert')
      or has_table_privilege('authenticated', 'basecamp.super_admins', 'update')
      or has_table_privilege('authenticated', 'basecamp.super_admins', 'delete')
      or has_table_privilege('authenticated', 'basecamp.super_admins', 'truncate') then
-    raise exception 'authenticated holds a WRITE privilege on the trust root basecamp.super_admins';
+    raise exception 'authenticated holds a WRITE privilege on the trust root';
   end if;
   if has_table_privilege('service_role', 'basecamp.super_admins', 'truncate')
      or has_table_privilege('service_role', 'basecamp.super_admins', 'update') then
-    raise exception 'service_role holds UPDATE or TRUNCATE on the trust root — either defeats the last-row guard without changing the row count';
+    raise exception 'service_role holds UPDATE or TRUNCATE on the trust root';
   end if;
 
-  -- Both guards must EXIST and be ENABLED. Asserting the trigger's source text
-  -- would prove nothing: `alter table … disable trigger` leaves the definition
-  -- in place, and with both disabled the table can be emptied by one DELETE.
-  select count(*) into n from pg_trigger
-   where tgrelid = 'basecamp.super_admins'::regclass
-     and tgname in ('basecamp_super_admins_keep_last', 'basecamp_super_admins_no_truncate')
-     and tgenabled <> 'D';
+  -- The audit log is append-only, and that is a privilege fact as well as a
+  -- trigger fact. `authenticated` must hold SELECT and nothing else: the rows
+  -- are written by definer triggers, so no client ever needs INSERT.
+  -- NOT wrapped in `if to_regclass(...) is not null`. 0001 always creates this
+  -- table, so the conditional's only effect would be that a baseline which LOST
+  -- the audit log passes silently — the assertion unable to fire in exactly the
+  -- case that needs it.
+  if to_regclass('basecamp.access_audit') is null then
+    raise exception 'basecamp.access_audit is missing — the baseline is incomplete';
+  end if;
+  if true then
+    if has_table_privilege('authenticated', 'basecamp.access_audit', 'insert')
+       or has_table_privilege('authenticated', 'basecamp.access_audit', 'update')
+       or has_table_privilege('authenticated', 'basecamp.access_audit', 'delete')
+       or has_table_privilege('authenticated', 'basecamp.access_audit', 'truncate') then
+      raise exception 'authenticated holds a WRITE privilege on the audit log';
+    end if;
+    if has_table_privilege('service_role', 'basecamp.access_audit', 'update')
+       or has_table_privilege('service_role', 'basecamp.access_audit', 'delete')
+       or has_table_privilege('service_role', 'basecamp.access_audit', 'truncate') then
+      raise exception 'service_role can rewrite or erase the audit log';
+    end if;
+    if exists (select 1 from pg_policies
+                where schemaname='basecamp' and tablename='access_audit'
+                  and cmd in ('INSERT','UPDATE','DELETE')) then
+      raise exception 'access_audit has a write policy — it must be trigger-written only';
+    end if;
+  end if;
+
+  -- Guard triggers must EXIST and be ENABLED. Asserting their source text would
+  -- prove nothing: `alter table ... disable trigger` leaves the definition in
+  -- place while removing the protection.
+  select count(*) into n from pg_trigger t
+    join pg_class c on c.oid = t.tgrelid
+    join pg_namespace ns on ns.oid = c.relnamespace
+   where ns.nspname='basecamp' and not t.tgisinternal and t.tgenabled <> 'D'
+     and t.tgname in ('basecamp_super_admins_keep_last','basecamp_super_admins_no_truncate');
   if n <> 2 then
     raise exception 'the trust-root guards are missing or disabled (% of 2 enabled)', n;
   end if;
-
-  -- Any view here must run with the CALLER's rights, or it reads past RLS.
-  select count(*) into n
-    from pg_class c join pg_namespace ns on ns.oid = c.relnamespace
-   where ns.nspname = 'basecamp' and c.relkind in ('v', 'm')
-     and not coalesce((select option_value::boolean
-                         from pg_options_to_table(c.reloptions)
-                        where option_name = 'security_invoker'), false);
-  if n <> 0 then
-    raise exception '% view(s) in basecamp run with owner rights and bypass RLS — create them WITH (security_invoker = true)', n;
+  if to_regclass('basecamp.access_audit') is not null then
+    select count(*) into n from pg_trigger t
+      join pg_class c on c.oid = t.tgrelid
+      join pg_namespace ns on ns.oid = c.relnamespace
+     where ns.nspname='basecamp' and not t.tgisinternal and t.tgenabled <> 'D'
+       and t.tgname in ('basecamp_access_audit_no_mutation','basecamp_access_audit_no_truncate');
+    if n <> 2 then
+      raise exception 'the audit append-only guards are missing or disabled (% of 2 enabled)', n;
+    end if;
   end if;
 
-  raise notice 'security boundary asserted: owners pinned, definers hardened, anon shut out, trust-root privileges and guards verified, no owner-rights views, app role able to reach the schema';
+  -- The audit's coverage decisions, asserted so a regeneration cannot lose them.
+  if has_table_privilege('authenticated','basecamp.access_grants','update')
+     or has_table_privilege('authenticated','basecamp.type_grants','update') then
+    raise exception 'authenticated holds UPDATE on a grant table — an unaudited re-target path';
+  end if;
+  if exists (select 1 from pg_policies where schemaname='basecamp'
+              and tablename in ('access_grants','type_grants') and cmd='UPDATE') then
+    raise exception 'an UPDATE policy survives on a grant table';
+  end if;
+  if has_table_privilege('service_role','basecamp.access_grants','truncate')
+     or has_table_privilege('service_role','basecamp.type_grants','truncate')
+     or has_table_privilege('service_role','basecamp.members','truncate')
+     or has_table_privilege('service_role','basecamp.access_audit','insert') then
+    raise exception 'service_role can mass-revoke without a trace, or forge audit rows';
+  end if;
+  if to_regclass('basecamp.access_audit') is not null then
+    -- All FOUR writers plus the three TRUNCATE guards. A count, not a spot check:
+    -- losing one writer is exactly the silent regression this file exists to stop.
+    select count(*) into n from pg_trigger t
+      join pg_class c on c.oid = t.tgrelid
+      join pg_namespace ns on ns.oid = c.relnamespace
+     where ns.nspname='basecamp' and not t.tgisinternal and t.tgenabled <> 'D'
+       and t.tgname in ('basecamp_access_grants_audit','basecamp_type_grants_audit',
+                        'basecamp_members_audit','basecamp_super_admins_audit');
+    if n <> 4 then
+      raise exception 'expected 4 enabled audit writers, found % — an access-changing table is unaudited', n;
+    end if;
+    select count(*) into n from pg_trigger t
+      join pg_class c on c.oid = t.tgrelid
+      join pg_namespace ns on ns.oid = c.relnamespace
+     where ns.nspname='basecamp' and not t.tgisinternal and t.tgenabled <> 'D'
+       and t.tgname in ('basecamp_access_grants_no_truncate','basecamp_type_grants_no_truncate',
+                        'basecamp_members_no_truncate');
+    if n <> 3 then
+      raise exception 'expected 3 TRUNCATE guards on the audited tables, found %', n;
+    end if;
+    if not has_table_privilege('authenticated','basecamp.access_audit','select') then
+      raise exception 'authenticated cannot SELECT the audit log — the Audit tab would never render';
+    end if;
+  end if;
+
+  -- D14 — the DEFAULT ACL, not just today's tables. Naming tables can only
+  -- protect the ones that exist when this file is written; the schema-wide
+  -- default is what silently arms the next one. Proven: with service_role
+  -- re-granted UPDATE on access_grants, a single statement re-points a grant
+  -- and writes no audit row, and this file used to commit clean.
+  if has_table_privilege('service_role','basecamp.access_grants','update')
+     or has_table_privilege('service_role','basecamp.type_grants','update')
+     or has_table_privilege('service_role','basecamp.members','update') then
+    raise exception 'service_role holds UPDATE on an access table — an unaudited re-target path';
+  end if;
+  if exists (select 1 from pg_default_acl d
+              where d.defaclnamespace = 'basecamp'::regnamespace
+                and d.defaclobjtype = 'r'
+                and array_to_string(d.defaclacl, ',') ~ 'service_role=[^/]*D') then
+    raise exception 'the basecamp default ACL grants service_role TRUNCATE on every future table';
+  end if;
+
+  -- D16 — the definer checks above all filter on `prosecdef`, so flipping a
+  -- helper to SECURITY INVOKER makes it vanish from every one of them rather
+  -- than fail them. Name the functions that must be definers.
+  if exists (select 1 from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+              where ns.nspname = 'basecamp' and not p.prosecdef
+                and p.proname in ('is_super_admin','list_people','log_access_change',
+                                  'prevent_access_truncate','prevent_audit_mutation',
+                                  'prevent_last_super_admin_delete','prevent_super_admins_truncate')) then
+    raise exception 'a helper that must be SECURITY DEFINER is not — it would silently escape every check above';
+  end if;
+
+  -- D17 — the writer must still WRITE. Enablement was asserted; a gutted body
+  -- (`begin return null; end`) left all four triggers present and enabled while
+  -- every grant went unaudited, and this file committed clean. A substring test
+  -- is weak, but it is strictly better than asserting nothing about the body.
+  if to_regclass('basecamp.access_audit') is not null
+     and (select p.prosrc from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+           where ns.nspname = 'basecamp' and p.proname = 'log_access_change')
+         not like '%insert into basecamp.access_audit%' then
+    raise exception 'log_access_change no longer writes access_audit — the triggers fire and record nothing';
+  end if;
+
+  -- No view may run with owner rights.
+  select count(*) into n
+    from pg_class c join pg_namespace ns on ns.oid = c.relnamespace
+   -- 'v' only: a MATERIALIZED view cannot carry security_invoker at all, so
+     -- including 'm' would make this assertion permanently unsatisfiable the
+     -- first time anyone adds one. Matviews need their own decision, not a
+     -- check nobody can pass.
+   where ns.nspname = 'basecamp' and c.relkind = 'v'
+     and not coalesce((select option_value::boolean from pg_options_to_table(c.reloptions)
+                        where option_name = 'security_invoker'), false);
+  if n <> 0 then
+    raise exception '% view(s) in basecamp bypass RLS — create them WITH (security_invoker = true)', n;
+  end if;
+
+  raise notice 'security boundary asserted: owners pinned, definers hardened, anon shut out, trust-root and audit privileges and guards verified, no owner-rights views, app role able to reach the schema';
 end $$;
 
 commit;

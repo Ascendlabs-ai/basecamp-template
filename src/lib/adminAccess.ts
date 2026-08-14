@@ -77,6 +77,17 @@ export function deleteTypeKey(typeId: string): string {
 }
 
 /**
+ * In-flight key for "send this person a password link".
+ *
+ * Prefixed like the others because all of these share ONE pending Set: without
+ * the prefix a reset for user X and a grant to user X would claim the same slot,
+ * and the second would be dropped as a duplicate.
+ */
+export function resetKey(userId: string): string {
+  return `reset:${userId}`;
+}
+
+/**
  * A constant, not `create-type:${name}`. The create handler clears the name
  * field synchronously after dispatching, so a name-derived key made the reader
  * look up `create-type:` while the writer had claimed `create-type:Contractor`

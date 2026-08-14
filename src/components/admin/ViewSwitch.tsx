@@ -14,8 +14,8 @@ import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
  * The active segment uses `text.primary` fill with `background.paper` ink
  * (design: #1D1D20 / #fff), which is the same near-black the sidebar uses.
  */
-/** The design's two segments plus Types, which the type model needs. */
-export type AdminView = "person" | "matrix" | "types";
+/** The design's two segments, plus Types and the append-only access Audit. */
+export type AdminView = "person" | "matrix" | "types" | "audit";
 
 export default function ViewSwitch({
   value,
@@ -33,7 +33,9 @@ export default function ViewSwitch({
       onChange={(_, next) => {
         // null when the active segment is clicked again — a segmented control
         // has no "off", so ignore it rather than dropping to an unset view.
-        if (next === "person" || next === "matrix" || next === "types") onChange(next);
+        if (next === "person" || next === "matrix" || next === "types" || next === "audit") {
+          onChange(next);
+        }
       }}
       sx={(theme) => ({
         backgroundColor: theme.palette.action.hover,
@@ -73,6 +75,10 @@ export default function ViewSwitch({
           person-shaped view can answer, and putting it anywhere else would
           split access administration across two places. */}
       <ToggleButton value="types">Types</ToggleButton>
+      {/* Fourth segment. The audit log answers "who changed what, and when",
+          which is a question about the other three views rather than a fourth
+          way of editing access — it is read-only by construction. */}
+      <ToggleButton value="audit">Audit</ToggleButton>
     </ToggleButtonGroup>
   );
 }

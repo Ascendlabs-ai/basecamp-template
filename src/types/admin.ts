@@ -2,6 +2,29 @@
 export type Person = {
   id: string;
   email: string;
+  /** When the account signed up. From auth.users.created_at, super_admin-gated. */
+  created_at: string;
+  /**
+   * Whether this person is in `basecamp.super_admins` — this schema's own trust
+   * root, so it says nothing about any other app sharing the project.
+   *
+   * READ-ONLY in the UI, deliberately. There is no path here that writes the
+   * trust root: promoting or demoting an administrator is a SQL statement, and
+   * the roster surfaces the fact without offering to change it.
+   */
+  is_super_admin: boolean;
+};
+
+/** One row of basecamp.access_audit. Append-only; the app never writes it. */
+export type AuditRow = {
+  id: number;
+  occurred_at: string;
+  actor_email: string | null;
+  action: "grant" | "revoke";
+  source_table: "access_grants" | "type_grants" | "super_admins" | "members" | "unknown";
+  subject_label: string | null;
+  object_kind: "entry" | "category" | "type" | null;
+  object_label: string | null;
 };
 
 /** An entry as the admin screens need it — identity and label only. */

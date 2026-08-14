@@ -59,6 +59,8 @@ export default function GrantsByPerson({
   pending,
   onToggle,
   onAssign,
+  onSendResetLink,
+  resetPending,
 }: {
   person: Person;
   categories: GrantCategory[];
@@ -69,6 +71,8 @@ export default function GrantsByPerson({
   pending: Set<string>;
   onToggle: (userId: string, target: ToggleTarget) => void;
   onAssign: (userId: string, typeId: string | null, department: string | null) => void;
+  onSendResetLink: (person: Person) => void;
+  resetPending: boolean;
 }) {
   const member = memberIndex.get(person.id);
   const memberPending = pending.has(memberKey(person.id));
@@ -107,6 +111,50 @@ export default function GrantsByPerson({
 
   return (
     <Stack spacing={2} sx={{ minWidth: 0 }}>
+      {/* ---- Account ------------------------------------------------------- */}
+      <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: "divider" }}>
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          spacing={1.5}
+          sx={{ alignItems: { sm: "center" }, justifyContent: "space-between" }}
+        >
+          <Box sx={{ minWidth: 0 }}>
+            <Typography sx={{ fontSize: 13, fontWeight: 600 }}>{person.email}</Typography>
+            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+              Joined{" "}
+              {new Date(person.created_at).toLocaleDateString("en-GB", {
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+              })}
+              {person.is_super_admin ? " · Administrator" : ""}
+            </Typography>
+          </Box>
+
+          {/* Triggers the PUBLIC recovery email. No password is set, seen or
+              reset here — the person who owns the mailbox does that. There is
+              deliberately no "change password" or "disable account" control:
+              both would need the admin API, which this app has no key for. */}
+          <Button
+            variant="outlined"
+            size="small"
+            disabled={resetPending}
+            onClick={() => onSendResetLink(person)}
+            startIcon={resetPending ? <CircularProgress size={14} color="inherit" /> : null}
+            sx={{ flexShrink: 0, cursor: "pointer" }}
+          >
+            {resetPending ? "Sending…" : "Send password link"}
+          </Button>
+        </Stack>
+
+        {person.is_super_admin ? (
+          <Typography variant="caption" sx={{ display: "block", color: "text.secondary", mt: 1.25 }}>
+            This person is an administrator. Administrators are added and removed in
+            SQL, not here — the grants below do not affect that.
+          </Typography>
+        ) : null}
+      </Paper>
+
       {/* ---- Type and department ------------------------------------------ */}
       <Paper elevation={0} sx={{ p: { xs: 2, sm: 2.5 }, border: 1, borderColor: "divider" }}>
         <Typography component="h2" sx={{ fontSize: 14, fontWeight: 700 }}>

@@ -17,6 +17,16 @@ at your own Supabase project, and it is yours; nothing links back here.
 - **Access administration** at `/admin/access` — grant a person a single entry
   or a whole category, or grant a *type* of person (staff, contractor, client)
   a set of things once and assign people to it.
+- **A people roster** showing every account on the project, when it joined, and
+  whether it is an administrator — with **Send password link**, which triggers
+  Supabase's own recovery email so the person sets their own password at
+  `/auth/reset`. No administrator ever handles a password, and no service-role
+  key is involved. Read the email limits in
+  [`supabase/README.md`](supabase/README.md#email-built-in-only-and-it-will-not-carry-a-real-rollout)
+  before you rely on it.
+- **An append-only audit log** at **Admin → Audit** — every grant and revoke,
+  who did it and to whom, written by database triggers rather than by the app,
+  so a change cannot be made without being recorded.
 - **Deny-by-default auth.** Unauthenticated requests are redirected to
   `/login` by middleware that runs on every route except static assets.
 
@@ -95,11 +105,15 @@ and the brand guard. They do not need a database.
 **Nothing here tests the database**, which is where 100% of the access
 enforcement lives. What you get instead is `0002_security_boundary.sql`, which
 asserts the boundary at apply time and refuses to commit if ownership, RLS,
-definer hardening, the trust root's privileges, its two guards, or view safety
-are wrong. That is a real check, but it runs once. There is no shipped suite
-that proves your policies DENY correctly for a non-admin — verify that by hand
-after install (sign in as a user with no grants; you should see an empty
-catalog, not an error).
+definer hardening, the trust root's privileges and guards, the audit table's
+append-only guards and writers, the schema's default privileges, or view safety
+are wrong. Those assertions are mutation-tested: each was verified by
+deliberately breaking the thing it guards and confirming the file then refuses.
+
+But it runs **once**, at install. There is no shipped suite that proves your
+policies DENY correctly for a non-admin — verify that by hand after install
+(sign in as a user with no grants; you should see an empty catalog, not an
+error).
 
 ## Stack
 
@@ -112,10 +126,22 @@ environment variables and no other configuration.
 - **No seed data.** The catalog starts empty; the schema is the deliverable.
   `supabase/seed.example.sql` is a worked example you can run and then delete —
   it is not applied for you.
-- **No self-signup.** Accounts are issued by an administrator. The sign-in page
-  says so.
-- **No invite flow.** Adding a user today means creating the account in the
-  Supabase dashboard and granting them access in `/admin/access`.
+- **No signup screen — which is not the same as signup being off.** This app
+  ships no way to register through it, and the sign-in page says accounts are
+  issued by an administrator. That is true of the app; it is *not* true of the
+  Supabase project underneath, where signup is **open by default**. People who
+  sign up arrive with zero access until an administrator grants them something,
+  which is the intended model — but if you want the sign-in copy to be literally
+  true, turn signup off in Authentication → Providers → Email.
+- **No invite flow.** Adding a user means creating the account in the Supabase
+  dashboard, granting them access in `/admin/access`, and sending them a
+  password link from the roster. There is no single "invite" action, and the
+  password link runs on Supabase's built-in email service until you attach your
+  own SMTP — see the email section in `supabase/README.md`, which you should
+  read before onboarding anyone.
+- **No email provider.** No SendGrid, Mailgun, Postmark, Resend, nodemailer or
+  SMTP credentials anywhere in this repository, and no mail dependency in
+  `package.json`.
 - **No admin panel for the trust root.** Adding or removing an administrator is
   a SQL statement, documented in `supabase/README.md`. The policies for a UI are
   written and correct; the privileges are deliberately withheld until something

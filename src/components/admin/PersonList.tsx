@@ -117,6 +117,13 @@ export default function PersonList({
           const subLabel = typeName
             ? [typeName, member?.department].filter(Boolean).join(" · ")
             : "No type";
+          // "Joined 12 Mar 2026". The roster's job is answering who is on this
+          // project and when they arrived, which an email alone cannot.
+          const joined = new Date(p.created_at).toLocaleDateString("en-GB", {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          });
           return (
             <Box component="li" key={p.id}>
               <Box
@@ -126,7 +133,9 @@ export default function PersonList({
                 aria-pressed={isSelected}
                 // The visible count is a bare digit; without this a screen
                 // reader announced "someone@… 12" and never said 12 of what.
-                aria-label={`${p.email}, ${subLabel}, ${count} ${count === 1 ? "entry" : "entries"} visible`}
+                aria-label={`${p.email}, ${subLabel}, joined ${joined}${
+                  p.is_super_admin ? ", administrator" : ""
+                }, ${count} ${count === 1 ? "entry" : "entries"} visible`}
                 sx={(theme) => ({
                   width: "100%",
                   display: "flex",
@@ -168,6 +177,30 @@ export default function PersonList({
                   >
                     {p.email}
                   </Typography>
+                  {/* Read-only. There is deliberately no control here that
+                      promotes or demotes: the trust root is changed by SQL, and
+                      showing the fact without offering to change it is the whole
+                      point of surfacing it. */}
+                  {p.is_super_admin ? (
+                    <Box
+                      component="span"
+                      sx={(t) => ({
+                        display: "inline-block",
+                        mt: 0.25,
+                        px: 0.75,
+                        py: "1px",
+                        borderRadius: 50,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        letterSpacing: "0.3px",
+                        textTransform: "uppercase",
+                        color: t.palette.primary.dark,
+                        backgroundColor: t.palette.celestial.light,
+                      })}
+                    >
+                      Admin
+                    </Box>
+                  ) : null}
                   {/* The design's type · department line. aria-hidden because
                       the button's own label already reads it out; leaving it
                       exposed makes a screen reader say it twice. */}
@@ -182,7 +215,7 @@ export default function PersonList({
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {subLabel}
+                    {subLabel} · joined {joined}
                   </Typography>
                 </Box>
                 <Typography

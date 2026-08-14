@@ -12,13 +12,14 @@
 -- verifies it — the staleness guard that does lives in the private upstream and
 -- does not run here. Do not read it as a checked invariant.
 --
--- Two hand edits were applied to this generated file, and must be re-applied on
--- any regeneration: the pg_dump 17.6+ \restrict/\unrestrict wrapper lines were
--- removed (they are psql meta-commands and are rejected by the Supabase SQL
--- Editor, which is the documented way to apply this file), and COMMENT strings
--- naming the originating organisation were rewritten.
+-- Hand edits applied to this generated file, which must be RE-APPLIED on any
+-- regeneration: the PG17-only `SET transaction_timeout` was removed (it aborts
+-- on PG15/16), two enum labels naming the originating organisation's own
+-- infrastructure were renamed to `platform_auth`/`external_auth`, and COMMENT
+-- strings naming that organisation, its issue tracker or its migration versions
+-- were rewritten. See supabase/README.md -> "Regenerating this baseline".
 --
--- SOURCE-MIGRATION-VERSION: 20260812120300
+-- SOURCE-MIGRATION-VERSION: 20260813100600
 --
 -- PostgreSQL database dump
 --
@@ -309,16 +310,20 @@ COMMENT ON FUNCTION basecamp.is_super_admin() IS 'The admin gate. Reads basecamp
 -- Name: list_people(); Type: FUNCTION; Schema: basecamp; Owner: -
 --
 
-CREATE FUNCTION basecamp.list_people() RETURNS TABLE(id uuid, email text)
+CREATE FUNCTION basecamp.list_people() RETURNS TABLE(id uuid, email text, created_at timestamp with time zone, is_super_admin boolean)
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path TO ''
     AS $$
-  select u.id, u.email::text
+  select u.id,
+         u.email::text,
+         u.created_at,
+         exists (select 1 from basecamp.super_admins s where s.user_id = u.id)
     from auth.users u
    where basecamp.is_super_admin()
      -- auth.users.email is nullable (phone- and SSO-only accounts exist) and
      -- this function returns id + email, so a row with no email cannot be
-     -- rendered. NOT a confirmation filter: unconfirmed accounts ARE returned.
+     -- rendered. NOT a confirmation filter: unconfirmed accounts ARE returned,
+     -- which is correct for a roster whose job is showing who has signed up.
      and u.email is not null
    order by u.email;
 $$;
@@ -328,7 +333,144 @@ $$;
 -- Name: FUNCTION list_people(); Type: COMMENT; Schema: basecamp; Owner: -
 --
 
-COMMENT ON FUNCTION basecamp.list_people() IS 'Roster for the admin access screens: id + email from auth.users, super_admin only. Returns zero rows for everyone else — the empty result IS the authorization answer. Deliberately does not expose role, last_sign_in_at, or any other auth.users column.';
+COMMENT ON FUNCTION basecamp.list_people() IS 'Roster for the admin screens: id, email, signup time and Basecamp admin status, super_admin only. Returns zero rows for everyone else — the empty result IS the authorization answer. is_super_admin reflects basecamp.super_admins, this schema''s own trust root, and says nothing about any other app on the project. Deliberately does not expose last_sign_in_at or any other auth.users column.';
+
+
+--
+-- Name: log_access_change(); Type: FUNCTION; Schema: basecamp; Owner: -
+--
+
+CREATE FUNCTION basecamp.log_access_change() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO ''
+    AS $$
+declare
+  v_actor       uuid := auth.uid();
+  v_actor_email text;
+  v_action      text := case when tg_op = 'INSERT' then 'grant' else 'revoke' end;
+  v_source      text := tg_table_name;
+  v_subject_id  uuid;
+  v_subject_lbl text;
+  v_object_kind text;
+  v_object_id   uuid;
+  v_object_lbl  text;
+begin
+  select u.email into v_actor_email from auth.users u where u.id = v_actor;
+
+  if tg_table_name = 'members' then
+    -- Both columns, not just the type. A row moved to a different person is a
+    -- revoke and a grant even when the type is untouched — that is the whole
+    -- defect this migration exists to close.
+    if tg_op = 'UPDATE'
+       and new.member_type_id is not distinct from old.member_type_id
+       and new.user_id        is not distinct from old.user_id then
+      return null;  -- department-only edit: changes no access
+    end if;
+
+    if tg_op in ('UPDATE', 'DELETE') then
+      select u.email into v_subject_lbl from auth.users u where u.id = old.user_id;
+      select t.name  into v_object_lbl  from basecamp.member_types t where t.id = old.member_type_id;
+      insert into basecamp.access_audit
+        (actor_id, actor_email, action, source_table,
+         subject_id, subject_label, object_kind, object_id, object_label)
+      values (v_actor, v_actor_email, 'revoke', 'members',
+              old.user_id, v_subject_lbl, 'type', old.member_type_id, v_object_lbl);
+    end if;
+
+    if tg_op in ('INSERT', 'UPDATE') then
+      select u.email into v_subject_lbl from auth.users u where u.id = new.user_id;
+      select t.name  into v_object_lbl  from basecamp.member_types t where t.id = new.member_type_id;
+      insert into basecamp.access_audit
+        (actor_id, actor_email, action, source_table,
+         subject_id, subject_label, object_kind, object_id, object_label)
+      values (v_actor, v_actor_email, 'grant', 'members',
+              new.user_id, v_subject_lbl, 'type', new.member_type_id, v_object_lbl);
+    end if;
+
+    return null;
+  end if;
+
+  if tg_table_name = 'access_grants' then
+    v_subject_id := case when tg_op = 'INSERT' then new.user_id else old.user_id end;
+    select u.email into v_subject_lbl from auth.users u where u.id = v_subject_id;
+    v_object_id := case when tg_op = 'INSERT'
+                        then coalesce(new.entry_id, new.category_id)
+                        else coalesce(old.entry_id, old.category_id) end;
+    v_object_kind := case when tg_op = 'INSERT'
+                          then case when new.entry_id is not null then 'entry' else 'category' end
+                          else case when old.entry_id is not null then 'entry' else 'category' end end;
+
+  elsif tg_table_name = 'type_grants' then
+    v_subject_id := case when tg_op = 'INSERT' then new.member_type_id else old.member_type_id end;
+    select t.name into v_subject_lbl from basecamp.member_types t where t.id = v_subject_id;
+    v_object_id := case when tg_op = 'INSERT'
+                        then coalesce(new.entry_id, new.category_id)
+                        else coalesce(old.entry_id, old.category_id) end;
+    v_object_kind := case when tg_op = 'INSERT'
+                          then case when new.entry_id is not null then 'entry' else 'category' end
+                          else case when old.entry_id is not null then 'entry' else 'category' end end;
+
+  elsif tg_table_name = 'super_admins' then
+    v_subject_id := case when tg_op = 'INSERT' then new.user_id else old.user_id end;
+    select u.email into v_subject_lbl from auth.users u where u.id = v_subject_id;
+
+  else
+    v_source := 'unknown';
+  end if;
+
+  if v_object_kind = 'entry' then
+    select e.display_name into v_object_lbl from basecamp.entries e where e.id = v_object_id;
+  elsif v_object_kind = 'category' then
+    select c.name into v_object_lbl from basecamp.categories c where c.id = v_object_id;
+  end if;
+
+  insert into basecamp.access_audit
+    (actor_id, actor_email, action, source_table,
+     subject_id, subject_label, object_kind, object_id, object_label)
+  values (v_actor, v_actor_email, v_action, v_source,
+          v_subject_id, v_subject_lbl, v_object_kind, v_object_id, v_object_lbl);
+
+  return null;
+end $$;
+
+
+--
+-- Name: FUNCTION log_access_change(); Type: COMMENT; Schema: basecamp; Owner: -
+--
+
+COMMENT ON FUNCTION basecamp.log_access_change() IS 'Writes basecamp.access_audit from AFTER triggers on access_grants, type_grants, members and super_admins — the four surfaces that decide what a person can see. SECURITY DEFINER so it can insert past the audit table''s RLS and read auth.users for label snapshots. A member type change emits two rows (revoke old, grant new); a department-only edit emits none.';
+
+
+--
+-- Name: prevent_access_truncate(); Type: FUNCTION; Schema: basecamp; Owner: -
+--
+
+CREATE FUNCTION basecamp.prevent_access_truncate() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO ''
+    AS $$
+begin
+  raise exception
+    'refusing to TRUNCATE basecamp.% — TRUNCATE does not fire the audit trigger, so a mass revoke would leave no record. Use DELETE, which is audited row by row.',
+    tg_table_name
+    using errcode = 'restrict_violation';
+end $$;
+
+
+--
+-- Name: prevent_audit_mutation(); Type: FUNCTION; Schema: basecamp; Owner: -
+--
+
+CREATE FUNCTION basecamp.prevent_audit_mutation() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO ''
+    AS $$
+begin
+  raise exception
+    'basecamp.access_audit is append-only — % is refused. To prune deliberately, disable this trigger inside a transaction, delete, and re-enable it.',
+    tg_op
+    using errcode = 'restrict_violation';
+end $$;
 
 
 --
@@ -427,6 +569,56 @@ $$;
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
+
+--
+-- Name: access_audit; Type: TABLE; Schema: basecamp; Owner: -
+--
+
+CREATE TABLE basecamp.access_audit (
+    id bigint NOT NULL,
+    occurred_at timestamp with time zone DEFAULT now() NOT NULL,
+    actor_id uuid,
+    actor_email text,
+    action text NOT NULL,
+    source_table text NOT NULL,
+    subject_id uuid,
+    subject_label text,
+    object_kind text,
+    object_id uuid,
+    object_label text,
+    CONSTRAINT basecamp_access_audit_action_check CHECK ((action = ANY (ARRAY['grant'::text, 'revoke'::text]))),
+    CONSTRAINT basecamp_access_audit_object_kind_check CHECK (((object_kind IS NULL) OR (object_kind = ANY (ARRAY['entry'::text, 'category'::text, 'type'::text])))),
+    CONSTRAINT basecamp_access_audit_source_check CHECK ((source_table = ANY (ARRAY['access_grants'::text, 'type_grants'::text, 'super_admins'::text, 'members'::text, 'unknown'::text])))
+);
+
+
+--
+-- Name: TABLE access_audit; Type: COMMENT; Schema: basecamp; Owner: -
+--
+
+COMMENT ON TABLE basecamp.access_audit IS 'Append-only record of access changes. Written by AFTER triggers on access_grants, type_grants, members and super_admins — never by the application, which has no way to skip it. No foreign keys and snapshotted labels on purpose: the record must survive deletion of everything it names.';
+
+
+--
+-- Name: COLUMN access_audit.actor_id; Type: COMMENT; Schema: basecamp; Owner: -
+--
+
+COMMENT ON COLUMN basecamp.access_audit.actor_id IS 'auth.uid() at write time. NULL means an out-of-band change (SQL Editor, migration) — a real distinction, recorded rather than invented.';
+
+
+--
+-- Name: access_audit_id_seq; Type: SEQUENCE; Schema: basecamp; Owner: -
+--
+
+ALTER TABLE basecamp.access_audit ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME basecamp.access_audit_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
 
 --
 -- Name: access_grants; Type: TABLE; Schema: basecamp; Owner: -
@@ -705,6 +897,14 @@ COMMENT ON COLUMN basecamp.type_grants.granted_by IS 'Who added this type grant.
 
 
 --
+-- Name: access_audit basecamp_access_audit_pkey; Type: CONSTRAINT; Schema: basecamp; Owner: -
+--
+
+ALTER TABLE ONLY basecamp.access_audit
+    ADD CONSTRAINT basecamp_access_audit_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: access_grants basecamp_access_grants_pkey; Type: CONSTRAINT; Schema: basecamp; Owner: -
 --
 
@@ -793,6 +993,20 @@ ALTER TABLE ONLY basecamp.type_grants
 
 
 --
+-- Name: basecamp_access_audit_occurred_at_idx; Type: INDEX; Schema: basecamp; Owner: -
+--
+
+CREATE INDEX basecamp_access_audit_occurred_at_idx ON basecamp.access_audit USING btree (occurred_at DESC);
+
+
+--
+-- Name: basecamp_access_audit_subject_id_idx; Type: INDEX; Schema: basecamp; Owner: -
+--
+
+CREATE INDEX basecamp_access_audit_subject_id_idx ON basecamp.access_audit USING btree (subject_id);
+
+
+--
 -- Name: basecamp_access_grants_user_category_key; Type: INDEX; Schema: basecamp; Owner: -
 --
 
@@ -849,6 +1063,34 @@ CREATE UNIQUE INDEX basecamp_type_grants_type_entry_key ON basecamp.type_grants 
 
 
 --
+-- Name: access_audit basecamp_access_audit_no_mutation; Type: TRIGGER; Schema: basecamp; Owner: -
+--
+
+CREATE TRIGGER basecamp_access_audit_no_mutation BEFORE DELETE OR UPDATE ON basecamp.access_audit FOR EACH ROW EXECUTE FUNCTION basecamp.prevent_audit_mutation();
+
+
+--
+-- Name: access_audit basecamp_access_audit_no_truncate; Type: TRIGGER; Schema: basecamp; Owner: -
+--
+
+CREATE TRIGGER basecamp_access_audit_no_truncate BEFORE TRUNCATE ON basecamp.access_audit FOR EACH STATEMENT EXECUTE FUNCTION basecamp.prevent_audit_mutation();
+
+
+--
+-- Name: access_grants basecamp_access_grants_audit; Type: TRIGGER; Schema: basecamp; Owner: -
+--
+
+CREATE TRIGGER basecamp_access_grants_audit AFTER INSERT OR DELETE ON basecamp.access_grants FOR EACH ROW EXECUTE FUNCTION basecamp.log_access_change();
+
+
+--
+-- Name: access_grants basecamp_access_grants_no_truncate; Type: TRIGGER; Schema: basecamp; Owner: -
+--
+
+CREATE TRIGGER basecamp_access_grants_no_truncate BEFORE TRUNCATE ON basecamp.access_grants FOR EACH STATEMENT EXECUTE FUNCTION basecamp.prevent_access_truncate();
+
+
+--
 -- Name: categories basecamp_categories_set_updated_at; Type: TRIGGER; Schema: basecamp; Owner: -
 --
 
@@ -877,10 +1119,31 @@ CREATE TRIGGER basecamp_member_types_set_updated_at BEFORE UPDATE ON basecamp.me
 
 
 --
+-- Name: members basecamp_members_audit; Type: TRIGGER; Schema: basecamp; Owner: -
+--
+
+CREATE TRIGGER basecamp_members_audit AFTER INSERT OR DELETE OR UPDATE ON basecamp.members FOR EACH ROW EXECUTE FUNCTION basecamp.log_access_change();
+
+
+--
+-- Name: members basecamp_members_no_truncate; Type: TRIGGER; Schema: basecamp; Owner: -
+--
+
+CREATE TRIGGER basecamp_members_no_truncate BEFORE TRUNCATE ON basecamp.members FOR EACH STATEMENT EXECUTE FUNCTION basecamp.prevent_access_truncate();
+
+
+--
 -- Name: members basecamp_members_set_updated_at; Type: TRIGGER; Schema: basecamp; Owner: -
 --
 
 CREATE TRIGGER basecamp_members_set_updated_at BEFORE UPDATE ON basecamp.members FOR EACH ROW EXECUTE FUNCTION basecamp.set_updated_at();
+
+
+--
+-- Name: super_admins basecamp_super_admins_audit; Type: TRIGGER; Schema: basecamp; Owner: -
+--
+
+CREATE TRIGGER basecamp_super_admins_audit AFTER INSERT OR DELETE ON basecamp.super_admins FOR EACH ROW EXECUTE FUNCTION basecamp.log_access_change();
 
 
 --
@@ -895,6 +1158,20 @@ CREATE TRIGGER basecamp_super_admins_keep_last BEFORE DELETE ON basecamp.super_a
 --
 
 CREATE TRIGGER basecamp_super_admins_no_truncate BEFORE TRUNCATE ON basecamp.super_admins FOR EACH STATEMENT EXECUTE FUNCTION basecamp.prevent_super_admins_truncate();
+
+
+--
+-- Name: type_grants basecamp_type_grants_audit; Type: TRIGGER; Schema: basecamp; Owner: -
+--
+
+CREATE TRIGGER basecamp_type_grants_audit AFTER INSERT OR DELETE ON basecamp.type_grants FOR EACH ROW EXECUTE FUNCTION basecamp.log_access_change();
+
+
+--
+-- Name: type_grants basecamp_type_grants_no_truncate; Type: TRIGGER; Schema: basecamp; Owner: -
+--
+
+CREATE TRIGGER basecamp_type_grants_no_truncate BEFORE TRUNCATE ON basecamp.type_grants FOR EACH STATEMENT EXECUTE FUNCTION basecamp.prevent_access_truncate();
 
 
 --
@@ -1010,10 +1287,23 @@ ALTER TABLE ONLY basecamp.type_grants
 
 
 --
+-- Name: access_audit; Type: ROW SECURITY; Schema: basecamp; Owner: -
+--
+
+ALTER TABLE basecamp.access_audit ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: access_grants; Type: ROW SECURITY; Schema: basecamp; Owner: -
 --
 
 ALTER TABLE basecamp.access_grants ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: access_audit basecamp_access_audit_select_super_admin; Type: POLICY; Schema: basecamp; Owner: -
+--
+
+CREATE POLICY basecamp_access_audit_select_super_admin ON basecamp.access_audit FOR SELECT TO authenticated USING (( SELECT basecamp.is_super_admin() AS is_super_admin));
+
 
 --
 -- Name: access_grants basecamp_access_grants_delete_super_admin; Type: POLICY; Schema: basecamp; Owner: -
@@ -1034,13 +1324,6 @@ CREATE POLICY basecamp_access_grants_insert_super_admin ON basecamp.access_grant
 --
 
 CREATE POLICY basecamp_access_grants_select_super_admin ON basecamp.access_grants FOR SELECT TO authenticated USING (( SELECT basecamp.is_super_admin() AS is_super_admin));
-
-
---
--- Name: access_grants basecamp_access_grants_update_super_admin; Type: POLICY; Schema: basecamp; Owner: -
---
-
-CREATE POLICY basecamp_access_grants_update_super_admin ON basecamp.access_grants FOR UPDATE TO authenticated USING (( SELECT basecamp.is_super_admin() AS is_super_admin)) WITH CHECK (( SELECT basecamp.is_super_admin() AS is_super_admin));
 
 
 --
@@ -1200,13 +1483,6 @@ CREATE POLICY basecamp_type_grants_select_super_admin ON basecamp.type_grants FO
 
 
 --
--- Name: type_grants basecamp_type_grants_update_super_admin; Type: POLICY; Schema: basecamp; Owner: -
---
-
-CREATE POLICY basecamp_type_grants_update_super_admin ON basecamp.type_grants FOR UPDATE TO authenticated USING (( SELECT basecamp.is_super_admin() AS is_super_admin)) WITH CHECK (( SELECT basecamp.is_super_admin() AS is_super_admin));
-
-
---
 -- Name: categories; Type: ROW SECURITY; Schema: basecamp; Owner: -
 --
 
@@ -1305,11 +1581,26 @@ GRANT ALL ON FUNCTION basecamp.list_people() TO service_role;
 
 
 --
+-- Name: TABLE access_audit; Type: ACL; Schema: basecamp; Owner: -
+--
+
+GRANT SELECT ON TABLE basecamp.access_audit TO service_role;
+GRANT SELECT ON TABLE basecamp.access_audit TO authenticated;
+
+
+--
+-- Name: SEQUENCE access_audit_id_seq; Type: ACL; Schema: basecamp; Owner: -
+--
+
+GRANT ALL ON SEQUENCE basecamp.access_audit_id_seq TO service_role;
+
+
+--
 -- Name: TABLE access_grants; Type: ACL; Schema: basecamp; Owner: -
 --
 
-GRANT ALL ON TABLE basecamp.access_grants TO service_role;
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE basecamp.access_grants TO authenticated;
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN ON TABLE basecamp.access_grants TO service_role;
+GRANT SELECT,INSERT,DELETE ON TABLE basecamp.access_grants TO authenticated;
 
 
 --
@@ -1340,7 +1631,7 @@ GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE basecamp.member_types TO authenticate
 -- Name: TABLE members; Type: ACL; Schema: basecamp; Owner: -
 --
 
-GRANT ALL ON TABLE basecamp.members TO service_role;
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN ON TABLE basecamp.members TO service_role;
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE basecamp.members TO authenticated;
 
 
@@ -1356,8 +1647,8 @@ GRANT SELECT ON TABLE basecamp.super_admins TO authenticated;
 -- Name: TABLE type_grants; Type: ACL; Schema: basecamp; Owner: -
 --
 
-GRANT ALL ON TABLE basecamp.type_grants TO service_role;
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE basecamp.type_grants TO authenticated;
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN ON TABLE basecamp.type_grants TO service_role;
+GRANT SELECT,INSERT,DELETE ON TABLE basecamp.type_grants TO authenticated;
 
 
 --
@@ -1371,7 +1662,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA basecamp GRANT ALL ON SEQUE
 -- Name: DEFAULT PRIVILEGES FOR TABLES; Type: DEFAULT ACL; Schema: basecamp; Owner: -
 --
 
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA basecamp GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO service_role;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA basecamp GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLES TO service_role;
 
 
 --

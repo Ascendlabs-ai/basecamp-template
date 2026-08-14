@@ -14,6 +14,7 @@ import { describeError } from "@/lib/adminAccess";
 import { APP_NAME } from "@/lib/brand";
 import { createClient } from "@/lib/supabase/server";
 import type {
+  AuditRow,
   Grant,
   GrantCategory,
   Member,
@@ -99,7 +100,7 @@ export default async function AccessAdminPage() {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const [peopleRes, catRes, grantRes, typeRes, memberRes, typeGrantRes, entryCountRes] =
+  const [peopleRes, catRes, grantRes, typeRes, memberRes, typeGrantRes, auditRes, entryCountRes] =
     await Promise.all([
     supabase.rpc("list_people", {}, { count: "exact" }),
     supabase
@@ -120,6 +121,22 @@ export default async function AccessAdminPage() {
     supabase
       .from("type_grants")
       .select("id, member_type_id, entry_id, category_id", { count: "exact" }),
+    // The audit log. Bounded deliberately: this table only grows, and the screen
+    // shows recent history rather than the whole of it. The bound is a real
+    // limit, not a truncation guard, so it is NOT compared against `count` —
+    // doing so would report every install with more than 200 changes as broken.
+    supabase
+      .from("access_audit")
+      .select("id, occurred_at, actor_email, action, source_table, subject_label, object_kind, object_label")
+      // `id desc` is not decoration. A member type change emits TWO rows in one
+      // transaction, and `occurred_at` defaults to now() — the TRANSACTION
+      // timestamp — so the revoke and the grant carry an identical value.
+      // Ordering on occurred_at alone leaves the pair in plan-dependent order,
+      // and it was observed rendering the revoke ABOVE the grant in a
+      // newest-first log. The identity column is the only monotonic tiebreak.
+      .order("occurred_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(200),
     // Seventh element, not a serial follow-up: it has no data dependency on the
     // batch, and the sibling layout carries a comment about exactly this serial
     // latency being what made the loading skeleton visible.
@@ -143,6 +160,23 @@ export default async function AccessAdminPage() {
     const short = truncation(label, res as Counted);
     if (short) failures.push(short);
   }
+
+  // The audit read is checked for FAILURE but not for truncation: it carries an
+  // intentional .limit(), so a short result is the design rather than a fault.
+  // A failed read still refuses to render, for the same reason the others do —
+  // an empty audit log and an unreadable one look identical on screen, and one
+  // of them is a lie about what happened.
+  // NOT pushed into `failures`, deliberately, and this is the one read on the
+  // page that is treated differently. The refusal-to-render rule exists because
+  // a failed GRANTS read renders every switch off — a fabricated permissions
+  // picture presented as fact. An unreadable audit log misleads nobody: it is
+  // history, no access decision consults it, and the tab can say so itself.
+  // Making it fatal would mean a stale schema cache or a missing GRANT takes
+  // down the only surface that can fix either.
+  const auditError = auditRes.error
+    ? (console.error("[basecamp] admin access_audit failed:", auditRes.error.code, auditRes.error.message),
+       describeError(auditRes.error))
+    : null;
 
   // The nested `entries` read has no count of its own — PostgREST reports one
   // count for the top-level relation. Compare each category's embedded rows
@@ -281,6 +315,8 @@ export default async function AccessAdminPage() {
       memberTypes={(typeRes.data ?? []) as MemberType[]}
       initialMembers={(memberRes.data ?? []) as Member[]}
       initialTypeGrants={(typeGrantRes.data ?? []) as TypeGrant[]}
+      initialAudit={(auditRes.data ?? []) as AuditRow[]}
+      auditError={auditError}
       currentUserId={user.id}
     />
   );

@@ -7,6 +7,23 @@ import { SUPABASE_ANON_KEY, SUPABASE_URL } from "./env";
 /** Routes reachable without a session. Everything else requires one. */
 const PUBLIC_PATHS = ["/login"];
 
+/**
+ * Routes reachable EITHER WAY — signed in or not — and never redirected away
+ * from.
+ *
+ * `/auth/reset` has to be here rather than in PUBLIC_PATHS, and the reason is
+ * NOT that the visitor arrives authenticated — they do not. The recovery token
+ * is in the URL fragment and is exchanged client-side, so at middleware time
+ * there is no session cookie at all.
+ *
+ * The reason is the other direction: someone who is ALREADY signed in and clicks
+ * a reset link would be bounced to `/` by the `user && isPublic` rule below,
+ * landing them anywhere except the password form they opened. A route that must
+ * work in both states cannot be described by a flag that means "signed out
+ * only".
+ */
+const ALWAYS_PATHS = ["/auth/reset"];
+
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
 
@@ -44,9 +61,10 @@ export async function updateSession(request: NextRequest) {
   }
 
   const { pathname } = request.nextUrl;
-  const isPublic = PUBLIC_PATHS.some(
-    (p) => pathname === p || pathname.startsWith(`${p}/`),
-  );
+  const matches = (list: string[]) =>
+    list.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  const isPublic = matches(PUBLIC_PATHS);
+  const isAlways = matches(ALWAYS_PATHS);
 
   // A redirect is a BRAND NEW response and carries none of the cookies that
   // `setAll` wrote onto `response` above. Returning one bare drops the rotated
@@ -63,7 +81,7 @@ export async function updateSession(request: NextRequest) {
     return redirect;
   };
 
-  if (!user && !isPublic) {
+  if (!user && !isPublic && !isAlways) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     // Preserve where they were headed so login can return them there. Only the

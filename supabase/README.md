@@ -14,6 +14,30 @@ administrator. Nothing else.
 > `supabase db push`. If you would rather manage them with the CLI, rename them
 > to timestamped form first.
 
+### Regenerating this baseline
+
+You will not normally need to. It matters only if you take a fresh squash from
+the private upstream this template was extracted from — in which case the
+generated dump carries hand edits that must be **re-applied**, because the
+generator does not make them:
+
+- **Remove `SET transaction_timeout = 0;`.** pg_dump 17 emits it and it does not
+  exist before PG17; an unknown `SET` aborts the whole script on a PG15 or PG16
+  project.
+- **Rename the two `entry_auth_boundary` labels** that name the originating
+  organisation's own infrastructure back to `platform_auth` / `external_auth`.
+  Nothing references them — no DEFAULT, no CHECK, no function body — so the
+  rename is safe, but verify that before doing it.
+- **Rewrite the `COMMENT ON` strings** that name that organisation, its issue
+  tracker, or its migration versions. These are prose with no schema effect, but
+  they land permanently in your database.
+
+`0001`'s own header repeats this list. Also note that the
+`SOURCE-MIGRATION-VERSION` stamp in that file is **provenance only** here:
+nothing in this repository verifies it. The staleness guard that does lives in
+the private upstream and does not run against this repo, so do not read the
+stamp as a checked invariant.
+
 ---
 
 ## Order of operations
@@ -52,12 +76,53 @@ security boundary, so if it commits without raising, the boundary holds:
   would never fire;
 - both trust-root guards exist **and are enabled** (a disabled trigger keeps its
   definition, so asserting the source text would prove nothing);
+- the audit table is genuinely append-only: `authenticated` holds SELECT and
+  nothing else, its mutation and TRUNCATE guards are enabled, and all four audit
+  writers are attached to the tables they are supposed to watch;
+- the schema-wide **default** privilege for future tables grants `service_role`
+  no TRUNCATE — asserted against `pg_default_acl` directly, because a list of
+  today's tables can only ever name today's;
 - no view in `basecamp` runs with owner rights — since PG15 a view without
   `security_invoker` reads straight past RLS.
 
+None of that is a description of intent. Each item is an assertion inside `0002`
+that raises and rolls the whole file back if it does not hold; the assertions
+were mutation-tested, meaning each one was checked by deliberately breaking the
+thing it guards and confirming the file then refuses to commit.
+
+### 1b. Set the Auth URL configuration
+
+Dashboard → **Authentication → URL Configuration**:
+
+- **Site URL** → your deployed origin (e.g. `https://apps.example.com`).
+- **Redirect URLs** → must include `https://your-origin/auth/reset`, plus
+  `http://localhost:3000/auth/reset` if you run the app locally.
+
+The roster's **Send password link** button calls Supabase's *public* recovery
+endpoint with the anon key — no admin API and no service-role key anywhere — and
+the emailed link returns to `/auth/reset`, where the person sets their own
+password. The token arrives in the URL **fragment**, so it never reaches the
+server.
+
+If `/auth/reset` is not allow-listed, Supabase does not error. It silently
+substitutes the Site URL, which on a fresh project is `http://localhost:3000` —
+so real emails go out carrying links to a machine the recipient does not have.
+Set this before you send the first link.
+
 ### 2. Create the administrator's account
 
-Dashboard → **Authentication → Users → Add user**. This app has no self-signup.
+Dashboard → **Authentication → Users → Add user**.
+
+**Note what "no self-signup" does and does not mean here.** This app ships no
+signup screen, so nobody signs up *through it* — but the Supabase project
+underneath has signup **open by default** (`disable_signup: false`), and that is
+what the roster assumes: people can create an account on your project and arrive
+with **zero access**, and an administrator grants them what they need. The
+sign-in page's copy about accounts being issued by an administrator is true of
+the app, not of the project.
+
+If you want that copy to be literally true, turn signup off in
+**Authentication → Providers → Email** and create every account by hand.
 
 ### 3. Insert their trust-root row
 
@@ -107,6 +172,91 @@ your own. It is idempotent, so re-running it is a no-op.
 Note that after seeding you will see the catalog only because you are a
 super_admin. A colleague with no grants sees nothing until you grant them
 something in `/admin/access` — that is the access model working.
+
+---
+
+## Email: built-in only, and it will not carry a real rollout
+
+**This template ships no email provider.** No SendGrid, no Mailgun, no Postmark,
+no Resend, no nodemailer, no SMTP credentials and no sending domain — there is
+no mail dependency in `package.json` at all. Password links are sent by
+**Supabase's own built-in email service**, which every project has and which
+needs no configuration to start.
+
+**Read this before you rely on the Send password link button.**
+
+The built-in service is a development convenience, not a mail provider, and it
+is limited in two ways that together make it unusable for onboarding real
+people:
+
+| Limit | Effect |
+|---|---|
+| **~2 emails per hour, project-wide** | Not per address, not per admin — per project. Sending to a third person within the hour fails. |
+| **Team members' addresses only** | It will only deliver to email addresses belonging to members of your Supabase organisation. Mail to anyone else is silently not delivered. |
+
+**So, honestly: under the built-in service the reset flow works for you testing
+it on your own address, and does not work for your users.** The button will
+report "Password link sent" — the endpoint returns success either way, by
+design, so that this screen cannot be used to discover which addresses exist —
+and the recipient will simply never receive anything. That failure is invisible
+from inside the app. Do not discover it during an onboarding call.
+
+### Configure your own SMTP before you invite anyone
+
+Dashboard → **Project Settings → Authentication → SMTP Settings** → enable
+**Custom SMTP**, then supply your own provider's host, port, username, password,
+and a sender address on a domain you control. Any provider works. Nothing in
+this codebase names one, and nothing needs to change here when you pick.
+
+Two things to do at the same time:
+
+- **Raise the rate limit.** Authentication → Rate Limits → *Emails sent per
+  hour*. The default of 2 stays in force even after you attach your own SMTP —
+  custom SMTP does **not** lift it for you.
+- **Verify your sending domain** with your provider (SPF/DKIM), or password
+  links land in spam, which looks identical to "the link never arrived".
+
+Until both are done, treat **Send password link** as a self-test, and give
+people their initial password out of band.
+
+---
+
+## The audit log
+
+`basecamp.access_audit` records access changes — who, for whom, what, when — and
+is visible to administrators at **Admin → Audit**.
+
+It covers the four surfaces that decide what a person can see: `access_grants`
+(individual grants), `type_grants` (grants to a member type), `members` (which
+type a person holds — a type change is recorded as a revoke of the old plus a
+grant of the new, and moving a member row to a *different person* is recorded
+the same way), and `super_admins` (the trust root). UPDATE on the two grant
+tables was removed rather than audited, so a grant can only be added or removed.
+
+**The database writes it, not the app.** AFTER triggers on those four tables
+insert the rows, so a grant and its audit record commit together or neither
+does. That is forced by this app's architecture rather than chosen for elegance:
+every write comes from a browser under RLS, so an audit row the *client* was
+responsible for inserting would record exactly the changes that chose to be
+recorded. It also means changes made outside the app — a grant issued in the SQL
+Editor, an administrator added by hand — appear too, with the actor shown as
+`System` because there is no signed-in user.
+
+**Append-only is enforced, not declared.** No INSERT/UPDATE/DELETE policy;
+`authenticated` holds SELECT only; and a `BEFORE UPDATE OR DELETE` trigger
+raises unconditionally, which stops the table *owner* as well — owners bypass
+RLS but not triggers. TRUNCATE has its own guard, for the same reason the trust
+root does. To prune deliberately, disable the guard inside a transaction,
+delete, re-enable; `0002` fails if you leave it disabled.
+
+No foreign keys, and labels snapshotted at write time: an audit row must survive
+deletion of everything it names. With an FK, deleting an app or an account would
+silently delete the evidence that access to it was ever granted.
+
+> **Known gap, stated rather than discovered.** The snapshot labels protect
+> against the *row* disappearing, but a cascade delete still takes the audit
+> row's referents with it in some paths — including the ordinary **Delete type**
+> button. The audit row survives; some of what it names may not resolve.
 
 ---
 

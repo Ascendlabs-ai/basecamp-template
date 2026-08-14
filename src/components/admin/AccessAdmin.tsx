@@ -24,10 +24,13 @@ import {
   indexTypeGrants,
   memberKey,
   pendingKey,
+  resetKey,
   typeGrantKey,
 } from "@/lib/adminAccess";
 import { createClient } from "@/lib/supabase/client";
+import { createRecoverySender } from "@/lib/supabase/recovery";
 import type {
+  AuditRow,
   Grant,
   GrantCategory,
   Member,
@@ -38,6 +41,7 @@ import type {
 } from "@/types/admin";
 
 import AccessMatrix from "./AccessMatrix";
+import AuditLog from "./AuditLog";
 import GrantsByPerson from "./GrantsByPerson";
 import PersonList from "./PersonList";
 import TypesAdmin from "./TypesAdmin";
@@ -129,6 +133,8 @@ export default function AccessAdmin({
   memberTypes,
   initialMembers,
   initialTypeGrants,
+  initialAudit,
+  auditError,
   currentUserId,
 }: {
   people: Person[];
@@ -138,19 +144,29 @@ export default function AccessAdmin({
   memberTypes: MemberType[];
   initialMembers: Member[];
   initialTypeGrants: TypeGrant[];
+  initialAudit: AuditRow[];
+  auditError: string | null;
   currentUserId: string;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const viewParam = searchParams.get("view");
   const view: AdminView =
-    viewParam === "matrix" ? "matrix" : viewParam === "types" ? "types" : "person";
+    viewParam === "matrix"
+      ? "matrix"
+      : viewParam === "types"
+        ? "types"
+        : viewParam === "audit"
+          ? "audit"
+          : "person";
 
   const [grants, setGrants] = useState<Grant[]>(initialGrants);
   const [members, setMembers] = useState<Member[]>(initialMembers);
   const [typeGrants, setTypeGrants] = useState<TypeGrant[]>(initialTypeGrants);
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  // Separate from `error` so a success confirmation is not styled as a failure.
+  const [notice, setNotice] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string>(people[0]?.id ?? "");
 
   /**
@@ -174,12 +190,18 @@ export default function AccessAdmin({
    * (this repo's hooks config rejects set-state-in-effect, and an effect would
    * paint the stale list for a frame first).
    */
+  // Server-owned, like `grants`: the rows are written by database triggers, so
+  // there is no optimistic local version to keep — a change becomes visible when
+  // the server component re-runs, which router.refresh() already triggers.
+  const [audit, setAudit] = useState<AuditRow[]>(initialAudit);
+
   const [snapshot, setSnapshot] = useState(initialGrants);
   if (snapshot !== initialGrants) {
     setSnapshot(initialGrants);
     setGrants(initialGrants);
     setMembers(initialMembers);
     setTypeGrants(initialTypeGrants);
+    setAudit(initialAudit);
     // `pending` is deliberately NOT touched here. An earlier version blanked
     // it, which made the render mirror disagree with `inFlight`: the cell
     // stopped spinning, the user clicked, and `run` returned at the
@@ -493,6 +515,55 @@ export default function AccessAdmin({
     [members, router, run],
   );
 
+  /**
+   * Send a password-recovery email to one person.
+   *
+   * This is the PUBLIC recovery endpoint — the same one a "forgot password" link
+   * uses — called with the anon key. It is not an admin API and it needs no
+   * service role: it does not read, change or reveal anything about the account.
+   * All it does is ask Supabase to email that address a single-use link, and
+   * only whoever can open that mailbox can complete it. The administrator never
+   * sees or sets the password.
+   *
+   * `redirectTo` must be on the project's allow-list (Authentication → URL
+   * Configuration) or Supabase silently substitutes the Site URL, which is how
+   * this ends up mailing people a link to localhost.
+   *
+   * The result is deliberately indistinguishable for a real and an unknown
+   * address — the endpoint answers 200 either way, and this reports "sent"
+   * either way. Reporting "no such user" would turn an admin screen into an
+   * account-enumeration oracle for whoever is sitting at it.
+   */
+  const sendResetLink = useCallback(
+    (person: Person) =>
+      run(resetKey(person.id), async () => {
+        // NOT the app's browser client. That one is PKCE (hardcoded by
+        // @supabase/ssr and not overridable), which would store the code
+        // verifier in THIS administrator's browser and mail the recipient a
+        // link only this browser could complete. See lib/supabase/recovery.ts.
+        const supabase = createRecoverySender();
+        const { error: resetError } = await supabase.auth.resetPasswordForEmail(person.email, {
+          redirectTo: `${window.location.origin}/auth/reset`,
+        });
+        if (resetError) {
+          // Rate limiting is the expected failure here, and it is worth naming:
+          // Supabase caps recovery emails per address per hour, so a second
+          // click a minute later looks broken without this.
+          return `Could not send the link (${describeError(resetError)}). Supabase rate-limits recovery emails per address — if you just sent one, wait a few minutes.`;
+        }
+        // Deliberately "sent", not "delivered". The endpoint answers 200 for a
+        // real and an unknown address alike (that is what stops this screen
+        // becoming an enumeration oracle), and on Supabase's built-in email
+        // service it will also answer 200 for an address it silently will not
+        // deliver to — built-in mail reaches organisation members only, ~2/hour.
+        // Claiming delivery here would be claiming something this app cannot
+        // observe. See supabase/template/README.md → Email.
+        setNotice(`Password link sent to ${person.email}. If they do not receive it, check the project's SMTP settings — the built-in email service only reaches your Supabase organisation's own members.`);
+        return null;
+      }),
+    [run],
+  );
+
   /** Create a custom (non-system) type. */
   const createType = useCallback(
     (name: string, description: string | null) =>
@@ -642,6 +713,8 @@ export default function AccessAdmin({
                 pending={pending}
                 onToggle={toggleGrant}
                 onAssign={assignMember}
+                onSendResetLink={sendResetLink}
+                resetPending={pending.has(resetKey(selected.id))}
               />
             ) : null}
           </Box>
@@ -656,6 +729,8 @@ export default function AccessAdmin({
             pending={pending}
             onToggle={toggleGrant}
           />
+        ) : view === "audit" ? (
+          <AuditLog rows={audit} error={auditError} />
         ) : (
           <TypesAdmin
             memberTypes={memberTypes}
@@ -669,6 +744,17 @@ export default function AccessAdmin({
           />
         )}
       </Box>
+
+      <Snackbar
+        open={notice !== null}
+        autoHideDuration={6000}
+        onClose={() => setNotice(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert severity="success" variant="filled" onClose={() => setNotice(null)}>
+          {notice}
+        </Alert>
+      </Snackbar>
 
       <Snackbar
         open={error !== null}
