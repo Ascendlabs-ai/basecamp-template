@@ -57,8 +57,18 @@ anything on the live site, changing a setting in an outside account, or spending
 | Hosting | Vercel — two environment variables and no other configuration |
 | Code lives in | This repository, the copy you stamped from the template |
 
-Sign-in: Supabase Auth, email and password. **There is no self-signup** — an administrator creates
-accounts, and the sign-in page says so. Password reset is built and lives at `/auth/reset`.
+Sign-in: Supabase Auth, email and password.
+
+**"No self-signup" means the app, not the project — and the difference matters.** This app ships no
+signup screen and the sign-in page says accounts are issued by an administrator. Your Supabase
+project underneath has signup **open by default**, so somebody can create an account and arrive
+with **zero access** until you grant them something. That is the model working as intended, not a
+hole — but if you want the sign-in page's wording to be literally true, turn signup off in
+Authentication → Providers → Email.
+
+Password reset is built and lives at `/auth/reset`. **Two dashboard settings have to be right
+before a reset email reaches anyone** — the redirect URL and email delivery. Both fail silently if
+they are wrong; `supabase/README.md` has them.
 
 ## Commands
 
@@ -67,11 +77,10 @@ accounts, and the sign-in page says so. Password reset is built and lives at `/a
 | Install everything | `npm install` |
 | Run it locally | `npm run dev` (port 3000) |
 | Check nothing's broken | `npm run lint && npx tsc --noEmit && npm test` |
-| Put it live | Push to `main` — Vercel builds and deploys it |
+| Put it live | Push to `main` — once you have connected Vercel (it is on the list in `issues.md`), that builds and deploys it |
 
-Tests are Node's own runner with type stripping, so they need **Node 22.6 or newer**. They cover
-the pure logic — access resolution, catalog shaping, redirect safety, the brand guard and the
-template hygiene guard — and need no database.
+Tests are Node's own runner with type stripping, so they need **Node 22.6 or newer**, and they
+cover the pure logic only — no database needed. `README.md` lists exactly what they cover.
 
 **Nothing here tests the database**, which is where all the access enforcement lives.
 `supabase/migrations/0002_security_boundary.sql` asserts the boundary at apply time and refuses to

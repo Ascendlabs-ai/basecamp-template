@@ -34,10 +34,11 @@ still makes sense.
       waiting for it. Until it's filled in, your assistant can't find the shared documents and will
       have to ask you every time.
 
-- [ ] **Put your own name on it.** Product name, org name and tagline live in `src/lib/brand.ts`;
-      the logo in `src/components/Logo.tsx`; colours and type in `src/theme/theme.ts`; the browser
-      and app icons in `src/app/icon.png`, `src/app/apple-icon.png` and `public/favicon-*.png`.
-      All of them ship as neutral placeholders. `README.md` has the table.
+- [ ] **Put your own name on it.** Four places — name, logo, colours, icons — all shipping as
+      neutral placeholders. The table of exactly which files is in `README.md` under Rebranding.
+
+- [ ] **Delete `MAINTAINING.md`.** It's for whoever re-extracts this template from the private app
+      it came from. If you stamped this, it isn't for you.
 
 - [ ] **Add your first few catalog entries** and confirm somebody with no grants sees an empty
       catalog rather than an error. That's the check that proves access is actually working.
@@ -65,8 +66,18 @@ moment they come up.
       `0002_security_boundary.sql`. `0002` asserts the whole security boundary and refuses to
       commit if it's wrong, so if it finishes without complaining, the boundary holds.
 
-- [ ] **Create your own account, then make it the administrator.** The account is created in the
-      Supabase dashboard (there's no self-signup). Making it an administrator is one INSERT into
+- [ ] **Set the Auth URL configuration.** Authentication → URL Configuration: set the Site URL,
+      and add `/auth/reset` to the Redirect URLs. Get this wrong and Supabase does **not** error —
+      it silently substitutes the Site URL, which on a fresh project is localhost, and mails real
+      people a link to a machine they do not have.
+
+- [ ] **Set up your own email sending, and raise the email rate limit.** Until you do, the built-in
+      mailer delivers only to members of your own Supabase organisation, at roughly two messages an
+      hour for the whole project. "Send password link" reports success either way — this is the
+      failure that shows up in front of somebody else.
+
+- [ ] **Create your own account, then make it the administrator.** Create the account yourself in the
+      Supabase dashboard. Making it an administrator is one INSERT into
       `basecamp.super_admins` — the exact statement is in `supabase/README.md`.
 
 - [ ] **Copy `.env.local.example` to `.env.local` and fill in the two values** from Project
@@ -74,9 +85,6 @@ moment they come up.
 
 - [ ] **Deploy to Vercel.** Connect this repository and set the same two environment variables
       there. Nothing else is needed.
-
-- [ ] **Delete `MAINTAINING.md`.** It's for whoever re-extracts the template from the private app
-      it came from. If you stamped this, it isn't for you.
 
 ## Later
 
@@ -90,9 +98,8 @@ something that fits the time you have.
 - **A way to invite someone.** `(bigger)` Right now adding a person means creating their account in
   the Supabase dashboard and then granting them access in `/admin/access`.
 
-- **Check the colours really are all in one place.** `(small)` `src/theme/theme.ts` holds the
-  palette, but a few focus-ring colours sit outside it. Grep that file for raw hex values before
-  assuming a palette edit covered everything.
+- **Check the colours really are all in one place.** `(small)` A few focus-ring colours sit
+  outside the palette; the caveat is written up in `README.md` under Rebranding.
 
 ## Done
 

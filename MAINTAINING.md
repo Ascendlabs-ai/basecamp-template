@@ -52,8 +52,9 @@ Two consequences for a re-extraction, both easy to get wrong:
   without it `workflow-guard.mjs` blocks every commit in the client's project.
 
 `templateHygiene.test.ts` no longer forbids referring to `CLAUDE.md` or
-`issues.md` for this reason. It still forbids `AGENTS.md` and `WBS.md`, which
-this template does not ship.
+`issues.md` for this reason, and it now asserts positively that they ship. The
+operative note about which paths are still forbidden lives in that file's own
+comment — read it there rather than trusting a paraphrase here.
 
 ---
 
