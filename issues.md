@@ -108,4 +108,4 @@ checked — that's what makes this section useful six months from now instead of
 
 _(nothing yet)_
 
-<!-- ascend-template issues.md v1.0.0 -->
+<!-- template issues.md v1.0.0 -->

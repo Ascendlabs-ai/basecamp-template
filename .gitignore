@@ -20,9 +20,9 @@ scratchpad/
 .claude/.hook-errors.log
 .claude/.naysayer-result.json
 
-# The /naysayer review skill writes its verdict at the repo ROOT, which is a
-# different path from the hooks' copy above. Both are tool state, neither is
-# template content.
+# Some naysayer implementations write their verdict at the repo ROOT instead of
+# in .claude/. The skill shipped here writes no file at all, but a root copy does
+# turn up in practice — ignored either way. Tool state, not template content.
 .naysayer-result.json
 
 # Project-specific

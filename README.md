@@ -101,7 +101,8 @@ edit covered everything.
 
 Tests are Node's built-in runner with type stripping — **Node 22.6 or newer**,
 enforced by `engines` in `package.json`. They cover the pure logic: access
-resolution, catalog shaping, redirect safety, audit-log phrasing, the brand
+resolution, catalog shaping, redirect safety, middleware placement, audit-log
+phrasing, the brand
 guard, and a template-hygiene guard that fails if the SQL baseline picks up a
 psql meta-command or a PostgreSQL-17-only construct. They do not need a
 database.

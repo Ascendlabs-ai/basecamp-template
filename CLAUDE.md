@@ -38,9 +38,9 @@ service_role key bypasses RLS entirely, and this app has no second line of defen
 Access is the **union** of two things — what a person's *type* is granted, and what that person is
 granted individually. Neither can subtract from the other; there is no deny rule, on purpose.
 
-The trust root is `basecamp.super_admins`. Being in that table *is* being an administrator. Rows
-can be added and removed but never edited, the last row cannot be deleted, and `TRUNCATE` is
-refused outright.
+The trust root is `basecamp.super_admins`. Being in that table *is* being an administrator, and it
+is deliberately hard to destroy — `README.md` has the full account of the guarantees, and
+`0002_security_boundary.sql` is what actually enforces them.
 
 ## What you may do without asking
 
@@ -100,7 +100,8 @@ shape.
 
 ## How you build here
 
-The **cockpit** decides *what* and hands you a ready-to-paste prompt; you do the *how*. Neither of
+The **cockpit** — the Claude project where decisions get made, which is where your prompts
+come from — decides *what* and hands you a ready-to-paste prompt; you do the *how*. Neither of
 you proposes new tools — if one is genuinely needed, ask, check for a free tier, and say so.
 
 **All work happens on the main line.** No branches, no worktrees, no separate copy of the project
@@ -123,8 +124,8 @@ runbook — the two SQL files, in order, and the first-administrator step. `MAIN
 whoever re-extracts the template; **if you stamped this, you can delete it.**
 
 The shared documents — `HOW-TO-BUILD.md`, `GOAL-PROMPT.md`, `WORKING-SAFELY.md`, `DATA-SAFETY.md`
-and `COCKPIT-INSTRUCTIONS.md`, which describes the cockpit — live once in the standards repository
-you created, and are **read there, never copied here**:
+and `COCKPIT-INSTRUCTIONS.md`, which describes the cockpit — live once in your standards repository, if
+you have one, and are **read there, never copied here**:
 
 > **Standards repository:** _paste the address of your standards repository here._
 
@@ -138,4 +139,4 @@ start a second copy.
 If the same fix fails twice, stop, say so plainly, and suggest a different approach. Name a
 decision as a decision — that belongs in the cockpit, not in more attempts.
 
-<!-- ascend-template CLAUDE.md v1.2.0 -->
+<!-- template CLAUDE.md v1.2.0 -->
