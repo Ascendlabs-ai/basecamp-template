@@ -13,6 +13,18 @@ Thumbs.db
 scratchpad/
 .claude/settings.local.json
 
+# Safety-net runtime state, written by the hooks in .claude/. Generated for you;
+# never commit it. The hooks resolve these from .claude/ itself (see
+# .claude/hooks/shared.mjs), so the paths are exact, not a guess.
+.claude/.session-state.json
+.claude/.hook-errors.log
+.claude/.naysayer-result.json
+
+# The /naysayer review skill writes its verdict at the repo ROOT, which is a
+# different path from the hooks' copy above. Both are tool state, neither is
+# template content.
+.naysayer-result.json
+
 # Project-specific
 /.pnp
 .pnp.*

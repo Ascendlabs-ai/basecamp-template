@@ -54,7 +54,20 @@ const FORBIDDEN: ReadonlyArray<{ label: string; re: RegExp }> = [
   { label: "a maintainer's personal address", re: /@kdfaegis\.com|@madbrains\.ai/i },
   // Files the extraction deletes. A surviving reference sends a client to a
   // path that does not exist, which reads as a broken repo.
-  { label: "an upstream-only path", re: /\bCLAUDE\.md\b|\bAGENTS\.md\b|\bWBS\.md\b|\bissues\.md\b|supabase\/tests\b|supabase\/template\/|\bDesign\/|\bAscend_MD_files\b/ },
+  //
+  // `CLAUDE.md` and `issues.md` were on this list and are deliberately NOT any
+  // more: this template now SHIPS both, so a reference to either resolves. They
+  // were listed on the premise that extraction deletes them, and that premise
+  // made the guard enforce a real defect — the Build Kit walkthrough teaches a
+  // client to open `CLAUDE.md` on the step after it teaches them to recognise
+  // it, and until now they arrived at a file that was not there. The guardrails
+  // in `.claude/` could never have shipped either: `hooks/shared.mjs` and
+  // `skills/naysayer/SKILL.md` both name `CLAUDE.md`.
+  //
+  // `WBS.md` and `AGENTS.md` stay listed, because this template still does not
+  // ship them — that is why the shipped `CLAUDE.md` says nothing about a WBS.
+  // If either ever ships, remove it here in the same commit.
+  { label: "an upstream-only path", re: /\bAGENTS\.md\b|\bWBS\.md\b|supabase\/tests\b|supabase\/template\/|\bDesign\/|\bAscend_MD_files\b/ },
   // Upstream's migrations are timestamped; this template ships 0001/0002 only.
   { label: "an upstream migration filename", re: /\b20\d{12}_[a-z_]+\.sql\b/ },
   // Credential shapes. None of these should ever be committed anywhere.

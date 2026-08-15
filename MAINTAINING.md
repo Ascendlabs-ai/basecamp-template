@@ -28,6 +28,35 @@ to warn you.
 
 ---
 
+## Three files this repo owns, which upstream also has
+
+`CLAUDE.md`, `issues.md` and `.claude/` are **shipped deliberately** and are
+**this repository's own**, not upstream's. They are the client-facing versions:
+the Build Kit walkthrough teaches a client to recognise `CLAUDE.md` and
+`issues.md` on sight, and then has them open `CLAUDE.md` and read it aloud. Until
+they shipped, that step sent every client to a file that was not there.
+
+Two consequences for a re-extraction, both easy to get wrong:
+
+- **Take this repo's side for all three, always.** They are not app files and
+  step 3's "upstream's side where upstream has genuinely improved the logic" does
+  not apply — upstream's copies describe the private application, name its
+  organisation, and would trip `templateHygiene.test.ts` on the identity
+  patterns. Do not three-way merge them; keep them.
+- **`.claude/` is vendored, not authored here.** It is copied verbatim from the
+  Build Kit's shared guardrails set, which itself vendors it from the private
+  base-camp repository; that set carries a `PROVENANCE.md` recording the exact
+  source commit and the two deliberate deviations in `settings.json`. Fixes
+  belong at the original source — re-vendor rather than hand-editing here, or the
+  next re-vendor silently reverts you. `.claude/basecamp.json` is load-bearing:
+  without it `workflow-guard.mjs` blocks every commit in the client's project.
+
+`templateHygiene.test.ts` no longer forbids referring to `CLAUDE.md` or
+`issues.md` for this reason. It still forbids `AGENTS.md` and `WBS.md`, which
+this template does not ship.
+
+---
+
 ## How to re-extract
 
 Do **not** re-derive the transform by hand. Recover it mechanically, apply it
