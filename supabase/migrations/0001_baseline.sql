@@ -12,16 +12,34 @@
 -- verifies it — the staleness guard that does lives in the private upstream and
 -- does not run here. Do not read it as a checked invariant.
 --
--- Hand edits applied to this generated file, which must be RE-APPLIED on any
--- regeneration: the PG17-only `SET transaction_timeout` was removed and the
--- PG17-only `MAINTAIN` privilege was stripped from four GRANTs (both abort on
--- PG15/16 -- `unrecognized privilege type "maintain"`), two enum labels naming
--- the originating organisation's own
+-- PostgreSQL 15/16 COMPATIBILITY is the upstream GENERATOR's job now, not a
+-- hand edit anyone has to remember. It strips the PG17-only
+-- `SET transaction_timeout` and the PG17-only `MAINTAIN` privilege from every
+-- GRANT and ALTER DEFAULT PRIVILEGES, because either one aborts the whole
+-- script on PG15/16 (`unrecognized privilege type "maintain"`) before a single
+-- object is created. That used to be step 1 and 2 of a hand-edit list, and it
+-- shipped broken once when only half the list was applied.
+-- `src/lib/templateHygiene.test.ts` still checks both, because a guard that
+-- moved upstream is a guard this repo can no longer see.
+--
+-- Hand edits that ARE still applied here and must be RE-APPLIED on any
+-- regeneration: two enum labels naming the originating organisation's own
 -- infrastructure were renamed to `platform_auth`/`external_auth`, and COMMENT
 -- strings naming that organisation, its issue tracker or its migration versions
--- were rewritten. See supabase/README.md -> "Regenerating this baseline".
+-- were rewritten. See MAINTAINING.md -> "The SQL hand edits".
 --
--- SOURCE-MIGRATION-VERSION: 20260813100600
+-- ONE SPLICE, 2026-08-17, recorded because the stamp below moved without a
+-- re-dump. The six `REVOKE ALL ON FUNCTION ... FROM PUBLIC` lines covering the
+-- definer TRIGGER functions were copied verbatim from the upstream baseline
+-- generated at 20260814100100, whose migration does nothing else; the one
+-- before it (20260814100000) is assertion-only and emits no DDL. So the DDL in
+-- this file is now byte-equal to that newer upstream squash apart from the
+-- de-branding above, which is why the stamp reads 20260814100100 and the
+-- generation date does not move. PUBLIC includes `anon`, and a definer trigger
+-- function PUBLIC can execute is an audit-forgery path — see
+-- supabase/tests/boundary_mutations.sh.
+--
+-- SOURCE-MIGRATION-VERSION: 20260814100100
 -- GENERATED-ON: 2026-08-14
 --
 -- PostgreSQL database dump
@@ -1581,6 +1599,48 @@ GRANT ALL ON FUNCTION basecamp.is_super_admin() TO service_role;
 REVOKE ALL ON FUNCTION basecamp.list_people() FROM PUBLIC;
 GRANT ALL ON FUNCTION basecamp.list_people() TO authenticated;
 GRANT ALL ON FUNCTION basecamp.list_people() TO service_role;
+
+
+--
+-- Name: FUNCTION log_access_change(); Type: ACL; Schema: basecamp; Owner: -
+--
+
+REVOKE ALL ON FUNCTION basecamp.log_access_change() FROM PUBLIC;
+
+
+--
+-- Name: FUNCTION prevent_access_truncate(); Type: ACL; Schema: basecamp; Owner: -
+--
+
+REVOKE ALL ON FUNCTION basecamp.prevent_access_truncate() FROM PUBLIC;
+
+
+--
+-- Name: FUNCTION prevent_audit_mutation(); Type: ACL; Schema: basecamp; Owner: -
+--
+
+REVOKE ALL ON FUNCTION basecamp.prevent_audit_mutation() FROM PUBLIC;
+
+
+--
+-- Name: FUNCTION prevent_last_super_admin_delete(); Type: ACL; Schema: basecamp; Owner: -
+--
+
+REVOKE ALL ON FUNCTION basecamp.prevent_last_super_admin_delete() FROM PUBLIC;
+
+
+--
+-- Name: FUNCTION prevent_super_admins_truncate(); Type: ACL; Schema: basecamp; Owner: -
+--
+
+REVOKE ALL ON FUNCTION basecamp.prevent_super_admins_truncate() FROM PUBLIC;
+
+
+--
+-- Name: FUNCTION prevent_system_type_delete(); Type: ACL; Schema: basecamp; Owner: -
+--
+
+REVOKE ALL ON FUNCTION basecamp.prevent_system_type_delete() FROM PUBLIC;
 
 
 --

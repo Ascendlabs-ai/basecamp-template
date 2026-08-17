@@ -63,8 +63,10 @@ moment they come up.
       database looks wrong — it is a genuinely hard failure to diagnose.
 
 - [ ] **Apply the two SQL files, in order:** `supabase/migrations/0001_baseline.sql`, then
-      `0002_security_boundary.sql`. `0002` asserts the whole security boundary and refuses to
-      commit if it's wrong, so if it finishes without complaining, the boundary holds.
+      `0002_security_boundary.sql`. `0002` checks a long list of things about the security
+      boundary and refuses to commit if any of them is wrong. Read **Known gaps in the security
+      boundary** below before you treat a clean run as proof — there are five things it does not
+      catch, and you should know what they are.
 
 - [ ] **Set the Auth URL configuration.** Authentication → URL Configuration: set the Site URL,
       and add `/auth/reset` to the Redirect URLs. Get this wrong and Supabase does **not** error —
@@ -85,6 +87,82 @@ moment they come up.
 
 - [ ] **Deploy to Vercel.** Connect this repository and set the same two environment variables
       there. Nothing else is needed.
+
+## Known gaps in the security boundary
+
+**Read this once before you trust `0002`. It came with the template; you did not cause it.**
+
+`supabase/migrations/0002_security_boundary.sql` checks a long list of things and refuses to
+install if any of them is wrong. That is real — `supabase/tests/boundary_mutations.sh` breaks 72
+things one at a time; `0002` refuses 66 of them, repairs 5 before it looks, and correctly ignores
+1. But a review on **2026-08-17** got past it in the ways listed below, each proven on live
+PostgreSQL 16 and 17. `0002`'s own closing message is an enumerated list and every item on it is
+true; what is too strong is the shorthand *"if it commits, the boundary holds"* that these
+documents used to print.
+
+**What it takes to do any of these.** None is reachable by an ordinary signed-in user of your app,
+and **a service-role key does not reach any of them** — it speaks to the Data API, not the
+database, and cannot issue `CREATE POLICY`, `CREATE OR REPLACE FUNCTION`, `DROP TRIGGER` or
+`CREATE RULE`. Both of those were tested directly, with purpose-built roles, and refused every
+time. All but one need DDL as the schema owner: in practice the Supabase SQL editor, or a direct
+database connection as `postgres`. The exception is the last one, which needs only a **direct
+database connection** as a role holding `service_role` — not the API key, but a lower bar than the
+rest. So the honest reading is "`0002` will not catch a hostile or careless administrator", not
+"your app is open".
+
+- [ ] **A policy can be widened without `0002` noticing.** It rejects `using (true)`, but
+      `using (is_super_admin() or auth.uid() is not null)` passes — and that makes the whole
+      catalog, the administrator roster, and the audit log readable by any signed-in user. Adding a
+      brand-new wide-open policy passes too.
+- [ ] **An audit trigger can be pointed somewhere else.** `0002` checks the trigger's *name*, table
+      and enabled flag, never which function it calls. Repoint it and access changes stop being
+      recorded while `0002` reports "4 enabled audit writers".
+- [ ] **Five guard functions have no body check.** Emptying `prevent_last_super_admin_delete`
+      lets the last administrator be deleted — which locks you out of your own project.
+- [ ] **`list_people()` has no exact body check either, and it is the function that returns
+      everybody's email address.** Drop its `where basecamp.is_super_admin()` line and `0002` still
+      commits, while any signed-in user can pull the full roster with email addresses. The other
+      five access functions are pinned exactly; this one is not.
+- [ ] **`session_replication_role = 'replica'`, set on the database or the role, silences every
+      trigger at once** — all the guards and all the audit writing — and `0002` still commits.
+      (This one is a superuser-scope setting. Whether Supabase's `postgres` role can actually set
+      it was **not** verified — treat this bullet as unconfirmed on Supabase specifically; it is
+      proven on a self-hosted cluster.)
+- [ ] **A rewrite rule on the audit table makes the audit log stop recording, invisibly.**
+      `create rule ... on insert to basecamp.access_audit do instead nothing` throws the row away
+      *before* any trigger runs, so every trigger is still present, still enabled, still pointed at
+      the right function, and the function body still matches its checksum. `0002` reads none of
+      this and commits. This is the quietest one on the list.
+- [ ] **`0002` only ever looks inside the `basecamp` schema.** A `SECURITY DEFINER` function or a
+      plain view created in `public` that reads `basecamp.entries` runs with its owner's rights and
+      returns the whole catalog to a user with no grants — and `0002` never looks there. This is
+      the most likely one to happen **by accident**, because "add a SECURITY DEFINER helper" is the
+      standard advice for policy recursion, and the SQL editor creates objects as `postgres` by
+      default. Keep helpers that read `basecamp` inside `basecamp`, and create views
+      `with (security_invoker = true)`.
+- [ ] **A rogue trigger can be attached to an audited table with less than owner access.**
+      `service_role` holds the `TRIGGER` privilege on six `basecamp` tables, so a *direct database
+      connection* as that role can attach arbitrary logic to them. `0002` checks that the triggers
+      it expects are present; it never checks that nothing else was added. (A service-role API key
+      still cannot do this — PostgREST does not issue DDL.)
+
+Two smaller ones worth knowing:
+
+- [ ] **`0002` refuses a perfectly good policy of your own.** If you add a table and give it
+      `using (user_id = auth.uid())` — the tightest rule there is — `0002` calls it a permit-all
+      and refuses. Do not delete the policy to get past it, and do not stop running `0002`. Until
+      this is fixed, either keep such policies in a schema other than `basecamp`, or add the
+      policy after `0002` has run.
+- [ ] **`0002` checks that `authenticated` can SELECT `entries` and the audit log, but not the
+      other five tables.** If `0001` only half-applies, you can end up with a database `0002`
+      signs off on and an admin screen that fails with `permission denied`. Applying `0001` with
+      `-v ON_ERROR_STOP=1 --single-transaction`, as `supabase/README.md` says to, avoids this
+      entirely.
+
+These live in the template's upstream and the fix belongs there, so that every project stamped
+from it gets the same one. Nothing here is worse than what shipped before **2026-08-17** — that
+version handed every signed-in user the ability to forge entries in the audit log, which needed no
+administrator at all, and this one closes it.
 
 ## Later
 

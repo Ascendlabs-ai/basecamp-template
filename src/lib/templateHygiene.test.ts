@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -67,7 +68,16 @@ const FORBIDDEN: ReadonlyArray<{ label: string; re: RegExp }> = [
   // `WBS.md` and `AGENTS.md` stay listed, because this template still does not
   // ship them — that is why the shipped `CLAUDE.md` says nothing about a WBS.
   // If either ever ships, remove it here in the same commit.
-  { label: "an upstream-only path", re: /\bAGENTS\.md\b|\bWBS\.md\b|supabase\/tests\b|supabase\/template\/|\bDesign\/|\bAscend_MD_files\b/ },
+  //
+  // `supabase/tests` came off this list for the same reason `CLAUDE.md` did:
+  // the template now SHIPS `supabase/tests/boundary_mutations.sh` and
+  // `_supabase_surface_stub.sql`, so a reference to that path resolves. It was
+  // listed on the premise that extraction deletes the directory, and once the
+  // premise is false the entry stops guarding a leak and starts forbidding a
+  // correct reference — `0002_security_boundary.sql` points at the suite that
+  // proves it. `supabase/template/` stays: that directory is upstream's own
+  // layout and this repo does not have it.
+  { label: "an upstream-only path", re: /\bAGENTS\.md\b|\bWBS\.md\b|supabase\/template\/|\bDesign\/|\bAscend_MD_files\b/ },
   // Upstream's migrations are timestamped; this template ships 0001/0002 only.
   { label: "an upstream migration filename", re: /\b20\d{12}_[a-z_]+\.sql\b/ },
   // Credential shapes. None of these should ever be committed anywhere.
@@ -87,9 +97,10 @@ const ALLOWED = new Map<string, ReadonlyArray<string>>([
   // MAINTAINING.md documents the extraction, so it necessarily names the
   // upstream paths it excludes. It names no organisation and no credential.
   // "an upstream migration filename" was listed here too and matched nothing:
-  // MAINTAINING.md's only timestamp is a bare `20260813100600`, which has no
-  // `_name.sql` tail. A dead allowlist entry is exactly what silently covers a
-  // real hit later, so it is gone.
+  // MAINTAINING.md's timestamps are bare 14-digit versions with no `_name.sql`
+  // tail, which that pattern requires. A dead allowlist entry is exactly what
+  // silently covers a real hit later, so it is gone — do not restore it without
+  // a hit to point at.
   ["MAINTAINING.md", ["an upstream-only path"]],
 ]);
 
@@ -217,5 +228,301 @@ test("the baseline sets no GUC that predates the oldest supported PostgreSQL", (
     /^SET transaction_timeout/m,
     "`SET transaction_timeout` is PG17-only and aborts the script on PG15/16. " +
       "pg_dump 17 emits it; strip it after regenerating.",
+  );
+});
+
+/**
+ * `MAINTAIN` is PostgreSQL 17+ and aborts the script on PG15/16 with
+ * `unrecognized privilege type "maintain"` — the same class as the GUC above,
+ * and the one that actually shipped broken: the `transaction_timeout` edit was
+ * being applied while `MAINTAIN` still blocked PG16, so the stated
+ * compatibility was false and nothing said so.
+ *
+ * Three documents — this baseline's own header, MAINTAINING.md and README.md —
+ * assert that this test exists. Until now it did not. Upstream's generator
+ * strips MAINTAIN, so this failing means the generator regressed; do not
+ * hand-strip it and move on.
+ *
+ * Scoped to GRANT / ALTER DEFAULT PRIVILEGES rather than the whole file so a
+ * comment discussing the privilege does not trip it.
+ */
+test("the baseline grants no privilege that predates the oldest supported PostgreSQL", () => {
+  const baseline = readFileSync(
+    path.join(ROOT, "supabase", "migrations", "0001_baseline.sql"),
+    "utf8",
+  );
+  const offenders = baseline
+    .split("\n")
+    .map((line, i) => ({ line, n: i + 1 }))
+    .filter(({ line }) => /^(GRANT|ALTER DEFAULT PRIVILEGES)\b/.test(line) && /\bMAINTAIN\b/.test(line));
+
+  assert.deepEqual(
+    offenders.map(({ n, line }) => `${n}: ${line}`),
+    [],
+    "`MAINTAIN` is PG17-only and aborts the whole script on PG15/16 before a single object " +
+      "is created. Upstream's generator strips it; if it is back, the generator regressed.",
+  );
+});
+
+/**
+ * THE TESTS BELOW ARE MOSTLY A TRIPWIRE, NOT THE PROOF.
+ *
+ * (Deliberately not "the three tests below". That sentence has now been wrong
+ * twice, each time because a test was added and the count in the prose was
+ * not — in a file whose whole argument is that a number kept in prose drifts
+ * from the thing it describes. Do not reintroduce a count here.)
+ *
+ * The proof that `0002`'s assertions bite is
+ * `supabase/tests/boundary_mutations.sh`, which breaks one thing at a time in a
+ * real cluster and requires `0002` to refuse. That needs a database, so it
+ * cannot run in `npm test`. What CAN run here is a check that the structures
+ * those cases depend on are still physically present in the files — because the
+ * way this repo loses them is not someone deleting them on purpose, it is a
+ * three-way merge at re-extraction taking an older upstream hunk verbatim,
+ * exactly as MAINTAINING.md warns.
+ *
+ * KNOW WHAT THESE CANNOT SEE. Most read text, not behaviour. A `VALUES` list
+ * whose consuming `for … loop` was deleted still matches; a `raise exception`
+ * removed from an assertion block is invisible to a regex that matches the
+ * `select` above it. So a green run here means "not obviously reverted", never
+ * "sound".
+ *
+ * The two exceptions are real invariants rather than tripwires, because they
+ * recompute rather than pattern-match: the digest check recomputes each md5
+ * from the body 0001 ships, and the case-count check counts the suite's actual
+ * `run_case` calls. If any of these fails, run the mutation suite before
+ * touching anything.
+ *
+ * And none of them speaks to whether `0002`'s assertions are strong enough in
+ * the first place. See issues.md, "Known gaps in the security boundary".
+ */
+
+/**
+ * A definer TRIGGER function must never be executable by `authenticated`.
+ *
+ * This is not tidiness. It was proven end to end: a role holding `authenticated`
+ * plus CREATE on any schema creates its own table named `type_grants`, attaches
+ * `basecamp.log_access_change()` to it, and has forged rows written into the
+ * append-only audit log AS `postgres` — while a direct INSERT from the same
+ * session is refused. `CREATE TRIGGER` exercises EXECUTE, and that privilege
+ * check is the only thing in the way.
+ *
+ * Nothing legitimate needs the grant: PostgreSQL refuses to call a trigger
+ * function directly, and the trigger machinery does not consult EXECUTE.
+ *
+ * SECURITY DEFINER is the whole point of the scope. `set_updated_at()` is also
+ * a trigger function and is deliberately NOT covered: it is an INVOKER
+ * function, so attaching it to your own table runs it as you and buys nothing.
+ * Do not "fix" a failure here by widening the pattern to every trigger function
+ * — pg_dump emits no REVOKE for that one, so widening it just fails forever.
+ *
+ * The list is DERIVED from the baseline rather than written out here, so a
+ * definer trigger function added by a future regeneration is covered the day it
+ * arrives instead of the day someone remembers to extend a list.
+ */
+test("the baseline grants no one EXECUTE on a definer trigger function", () => {
+  const baseline = readFileSync(
+    path.join(ROOT, "supabase", "migrations", "0001_baseline.sql"),
+    "utf8",
+  );
+
+  const triggerFns = [
+    ...baseline.matchAll(
+      /^CREATE FUNCTION basecamp\.(\w+)\([^)]*\) RETURNS trigger\n(?:\s{4}.*\n)*?\s{4}LANGUAGE \w+ SECURITY DEFINER$/gm,
+    ),
+  ].map((m) => m[1]);
+
+  // A zero-length list would make every assertion below pass on nothing — the
+  // vacuous-pass failure this whole file exists to avoid.
+  assert.ok(
+    triggerFns.length >= 6,
+    `expected at least 6 definer trigger functions in the baseline, found ${triggerFns.length} — ` +
+      "either the baseline is truncated or pg_dump's CREATE FUNCTION formatting changed, " +
+      "in which case fix the pattern above rather than lowering this number",
+  );
+
+  const problems: string[] = [];
+  for (const fn of triggerFns) {
+    const granted = baseline.match(
+      new RegExp(`^GRANT [\\w ,]+ ON FUNCTION basecamp\\.${fn}\\([^)]*\\) TO (\\w+);`, "m"),
+    );
+    if (granted) problems.push(`${fn}: ${granted[0].trim()}`);
+    if (
+      !new RegExp(`^REVOKE ALL ON FUNCTION basecamp\\.${fn}\\([^)]*\\) FROM PUBLIC;`, "m").test(
+        baseline,
+      )
+    ) {
+      problems.push(`${fn}: no REVOKE ALL ... FROM PUBLIC (PUBLIC includes anon)`);
+    }
+  }
+
+  assert.deepEqual(
+    problems,
+    [],
+    "A definer trigger function is reachable by a role that can CREATE TRIGGER:\n  " +
+      problems.join("\n  ") +
+      "\n\nThat is the audit-forgery path. Do not fix it by editing 0002 alone — 0002 " +
+      "revokes at install time, but a baseline that ships the grant is a window between " +
+      "the two files, and a client who applies only 0001 never closes it.",
+  );
+});
+
+/**
+ * `0002` must pin the SIX access-model function bodies by digest, and must
+ * assert that no non-owner holds EXECUTE on a definer trigger function.
+ *
+ * Both requirements exist because weaker forms shipped and were defeated:
+ *
+ *   * A version of `0002` asserted nothing about five of the six functions that
+ *     decide access. `category_has_grant` rewritten to `select true` makes the
+ *     whole catalog readable by any signed-in user while the file prints
+ *     "security boundary asserted".
+ *   * Substring tests on the bodies are defeated by a SQL comment: a body of
+ *     `select true` followed by a comment naming `basecamp.super_admins` and
+ *     `auth.uid()` satisfies every `position()` check and makes every caller an
+ *     administrator. Hence digests rather than substrings.
+ *
+ * These six ship identically to every stamp of this template, from its own
+ * 0001, so an exact pin is correct here in a way it would not be for the policy
+ * set — which you are expected to change.
+ */
+test("the security boundary still pins the access-model bodies and the trigger-function ACL", () => {
+  const boundary = readFileSync(
+    path.join(ROOT, "supabase", "migrations", "0002_security_boundary.sql"),
+    "utf8",
+  );
+
+  const pinTuples = [...boundary.matchAll(/^\s*\('(\w+)',\s*'([0-9a-f]{32})'\)/gm)].map(
+    (m) => [m[1], m[2]] as const,
+  );
+  const pinned = new Map(pinTuples);
+
+  // A duplicated tuple would collapse into the Map and keep the LAST digest, so
+  // a stale first entry could pass here while 0002 — which uses `not exists` over
+  // the whole VALUES list — refuses on every client install. Catch the duplicate
+  // instead of silently resolving it.
+  assert.equal(
+    pinned.size,
+    pinTuples.length,
+    "0002's body-digest VALUES list names the same function twice. Remove the duplicate: " +
+      "this test would silently keep the last digest while 0002 reads both.",
+  );
+  const mustPin = [
+    "is_super_admin",
+    "has_grant",
+    "category_has_grant",
+    "can_read_entry",
+    "can_read_category",
+    "log_access_change",
+  ];
+  assert.deepEqual(
+    mustPin.filter((fn) => !pinned.has(fn)),
+    [],
+    "0002 no longer pins an access-model function body by md5. Without the pin, that " +
+      "function can be rewritten to a constant and 0002 still commits. Re-derive a digest " +
+      "only after READING the new body:\n" +
+      "  select proname, md5(prosrc) from pg_proc p join pg_namespace n on n.oid = p.pronamespace\n" +
+      "   where n.nspname = 'basecamp' and proname = '<fn>';",
+  );
+
+  // The digests must be RIGHT, not merely present — and this is the one
+  // hard-coded cross-file constant in the repository, so nothing else can catch
+  // it. The failure mode is nasty and asymmetric: regenerate 0001 with any body
+  // change, forget to re-derive, and `npm test` stays green while 0002 raises on
+  // EVERY client install. The defect surfaces at a stranger's keyboard as an
+  // opaque rollback.
+  //
+  // `prosrc` is the text between the dollar-quote delimiters, so it is
+  // recoverable from the baseline without a database. Verified equal to what
+  // PostgreSQL stores, on 16.15 and 17.10.
+  const baseline = readFileSync(
+    path.join(ROOT, "supabase", "migrations", "0001_baseline.sql"),
+    "utf8",
+  );
+  const wrong: string[] = [];
+  for (const fn of mustPin) {
+    const body = new RegExp(
+      `^CREATE FUNCTION basecamp\\.${fn}\\([^)]*\\)[\\s\\S]*?\\n    AS (\\$\\w*\\$)([\\s\\S]*?)\\1;$`,
+      "m",
+    ).exec(baseline);
+    if (!body) {
+      wrong.push(`${fn}: no CREATE FUNCTION body found in 0001 to hash`);
+      continue;
+    }
+    const actual = createHash("md5").update(body[2]).digest("hex");
+    if (actual !== pinned.get(fn)) {
+      wrong.push(`${fn}: 0002 pins ${pinned.get(fn)}, 0001 ships ${actual}`);
+    }
+  }
+
+  assert.deepEqual(
+    wrong,
+    [],
+    "A digest in 0002 does not match the body 0001 actually ships. Every client install " +
+      "would fail with 'an access-model function body differs from the one this template " +
+      "ships'. If you changed a body deliberately, READ it, then update the digest in 0002.",
+  );
+
+  // The assertion that closes the audit-forgery path at install time. Matched on
+  // the two clauses that make it specific — the trigger return type and the
+  // not-the-owner test — because either alone appears elsewhere in the file.
+  assert.match(
+    boundary,
+    /prorettype\s*=\s*'pg_catalog\.trigger'::regtype[\s\S]{0,400}?grantee\s*<>\s*p\.proowner/,
+    "0002 no longer asserts that a definer TRIGGER function is executable only by its " +
+      "owner. That assertion is what makes CREATE TRIGGER unusable as an audit-forgery " +
+      "path; see the case 'EXECUTE on log_access_change to a rogue role' in " +
+      "supabase/tests/boundary_mutations.sh.",
+  );
+});
+
+/**
+ * The mutation suite is the evidence behind every "PROVEN" claim in `0002`.
+ * A re-extraction that drops it leaves those claims unfalsifiable — and the
+ * suite is useless without its Supabase-surface stub, so both or neither.
+ */
+test("the mutation suite and its stub are shipped", () => {
+  const tracked = new Set(trackedFiles());
+  assert.deepEqual(
+    [
+      "supabase/tests/boundary_mutations.sh",
+      "supabase/tests/_supabase_surface_stub.sql",
+    ].filter((f) => !tracked.has(f)),
+    [],
+    "0002 cites supabase/tests/boundary_mutations.sh as the proof of its assertions. " +
+      "Shipping the claim without the proof is worse than shipping neither.",
+  );
+});
+
+/**
+ * The suite asserts its own case count, but only when it runs — and it needs a
+ * PostgreSQL cluster, so on most days nobody runs it. That makes
+ * `EXPECTED_CASES` a number that can drift out of step with the file it
+ * describes and stay wrong until the next release check, at which point it
+ * fails on a correct tree and looks like a real regression.
+ *
+ * Two reviewers miscounted this file by treating the `run_case () {` definition
+ * line as an invocation. That is exactly the mistake a machine should be making
+ * instead of a person, so: count here, in `npm test`, with no database.
+ */
+test("the mutation suite's declared case count matches the cases it actually runs", () => {
+  const suite = readFileSync(
+    path.join(ROOT, "supabase", "tests", "boundary_mutations.sh"),
+    "utf8",
+  );
+
+  const declared = /^EXPECTED_CASES=(\d+)$/m.exec(suite);
+  assert.ok(declared, "boundary_mutations.sh must declare EXPECTED_CASES=<n>");
+
+  // `^run_case "` — the opening quote is what separates the 73 invocations from
+  // the one `run_case () {` definition. Do not relax it to `^run_case `.
+  const invocations = (suite.match(/^run_case "/gm) ?? []).length;
+
+  assert.equal(
+    invocations,
+    Number(declared[1]),
+    `EXPECTED_CASES says ${declared[1]} but the file makes ${invocations} run_case calls. ` +
+      "The suite would exit 1 on a correct tree. Change both in the same commit — and if you " +
+      "are about to lower EXPECTED_CASES, check first that a case was not silently lost.",
   );
 });

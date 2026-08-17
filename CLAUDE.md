@@ -82,9 +82,14 @@ they are wrong; `supabase/README.md` has them.
 Tests are Node's own runner with type stripping, so they need **Node 22.6 or newer**, and they
 cover the pure logic only — no database needed. `README.md` lists exactly what they cover.
 
-**Nothing here tests the database**, which is where all the access enforcement lives.
+**`npm test` does not touch the database**, which is where all the access enforcement lives.
 `supabase/migrations/0002_security_boundary.sql` asserts the boundary at apply time and refuses to
-commit if it is wrong, but it runs once. Nothing proves your policies *deny* correctly for a
+commit if it is wrong, but it runs once. `supabase/tests/boundary_mutations.sh` is the proof that
+those assertions bite — it breaks one thing at a time in a throwaway PostgreSQL 16 or 17 cluster
+and requires `0002` to refuse. It needs a scratch cluster, so it is not part of `npm test`; its
+header says how to start one. `0002` is **not** airtight: the ways past it are recorded in
+`issues.md` under "Known gaps in the security boundary" — read that before telling anyone the
+boundary holds because `0002` committed. Nothing proves your policies *deny* correctly for a
 non-admin: check that by hand by signing in as somebody with no grants — you should see an empty
 catalog, not an error.
 

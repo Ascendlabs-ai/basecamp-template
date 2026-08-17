@@ -107,15 +107,29 @@ guard, and a template-hygiene guard that fails if the SQL baseline picks up a
 psql meta-command or a PostgreSQL-17-only construct. They do not need a
 database.
 
-**Nothing here tests the database**, which is where 100% of the access
+**`npm test` does not touch a database**, which is where 100% of the access
 enforcement lives. What you get instead is `0002_security_boundary.sql`, which
 asserts the boundary at apply time and refuses to commit if ownership, RLS,
 definer hardening, the trust root's privileges and guards, the audit table's
-append-only guards and writers, the schema's default privileges, or view safety
-are wrong. Those assertions are mutation-tested: each was verified by
-deliberately breaking the thing it guards and confirming the file then refuses.
+append-only guards and writers, the schema's default privileges, view safety,
+the ACLs on the definer trigger functions, the bodies of the six functions that
+decide access, or the policies that call them are wrong.
 
-But it runs **once**, at install. There is no shipped suite that proves your
+Those assertions are mutation-tested, and **the test is in the box**:
+`supabase/tests/boundary_mutations.sh` breaks one thing at a time in a throwaway
+PostgreSQL 16 or 17 cluster and requires `0002` to refuse — 72 mutations plus a
+control that must commit. Six cases expect a COMMIT and say so. Nothing about
+provisioning needs it; run it if you edit `0002`, or if you would rather see the
+proof than read about it.
+
+It is a floor, not a clean bill of health: a review on 2026-08-17 defeated
+several of `0002`'s stated invariants with mutations the suite does not contain.
+None is available to an ordinary signed-in user, and a service-role API key does
+not reach them either. They are enumerated in [`issues.md`](issues.md) under
+"Known gaps in the security boundary" — that list is the single copy; this
+paragraph deliberately does not restate its length.
+
+But `0002` runs **once**, at install. There is no shipped suite that proves your
 policies DENY correctly for a non-admin — verify that by hand after install
 (sign in as a user with no grants; you should see an empty catalog, not an
 error).
