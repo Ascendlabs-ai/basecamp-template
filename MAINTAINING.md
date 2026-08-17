@@ -19,7 +19,7 @@ That makes one thing load-bearing: **the anchor.**
 | **Extracted from upstream commit** | `f880dda` |
 | **Baseline squashed from migration** | `20260814100100` (see `SOURCE-MIGRATION-VERSION` in `0001_baseline.sql`) |
 | **Baseline generated on** | 2026-08-14 (see `GENERATED-ON` in the same file) |
-| **SQL boundary ported forward from** | `4f340e0` on 2026-08-17 — **`supabase/` only**, see below |
+| **SQL boundary ported forward from** | `806723b` on 2026-08-17 — **`supabase/` only**, see below |
 
 **Update the anchor row above in the same commit as every re-extraction**, and
 mirror it in the upstream repo's `issues.md`. Everything below depends on knowing
@@ -55,6 +55,11 @@ after: `0002` used to grant `EXECUTE` on all six definer **trigger** functions t
 the six access helpers, so `category_has_grant` rewritten to `select true` made
 the entire catalog readable by any signed-in user while the file printed
 "security boundary asserted".
+
+**This table was followed on 2026-08-17 to port upstream `806723b`** — `0002`'s
+executable text taken whole (verified zero code differences, comments re-applied
+by hand), the new mutation cases taken and the harness kept, the stub confirmed
+byte-identical. It works; use it again.
 
 **At the next full re-extraction, do NOT take upstream's side wholesale for
 either of these.** The two files diverge from upstream for different reasons and

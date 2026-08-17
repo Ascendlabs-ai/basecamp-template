@@ -93,10 +93,10 @@ moment they come up.
 **Read this once before you trust `0002`. It came with the template; you did not cause it.**
 
 `supabase/migrations/0002_security_boundary.sql` checks a long list of things and refuses to
-install if any of them is wrong. That is real — `supabase/tests/boundary_mutations.sh` breaks 72
-things one at a time; `0002` refuses 66 of them, repairs 5 before it looks, and correctly ignores
-1. But a review on **2026-08-17** got past it in the ways listed below, each proven on live
-PostgreSQL 16 and 17. `0002`'s own closing message is an enumerated list and every item on it is
+install if any of them is wrong. That is real — `supabase/tests/boundary_mutations.sh` breaks 92
+things one at a time and `0002` catches all but the six it is *designed* to repair or ignore. Two
+of the gaps below were closed on **2026-08-17**; the rest were got past by review on that date,
+each proven on live PostgreSQL 16 and 17. `0002`'s own closing message is an enumerated list and every item on it is
 true; what is too strong is the shorthand *"if it commits, the boundary holds"* that these
 documents used to print.
 
@@ -119,10 +119,12 @@ rest. So the honest reading is "`0002` will not catch a hostile or careless admi
       recorded while `0002` reports "4 enabled audit writers".
 - [ ] **Five guard functions have no body check.** Emptying `prevent_last_super_admin_delete`
       lets the last administrator be deleted — which locks you out of your own project.
-- [ ] **`list_people()` has no exact body check either, and it is the function that returns
-      everybody's email address.** Drop its `where basecamp.is_super_admin()` line and `0002` still
-      commits, while any signed-in user can pull the full roster with email addresses. The other
-      five access functions are pinned exactly; this one is not.
+- [x] **FIXED 2026-08-17 — `list_people()` had no exact body check**, and it is the function that
+      returns everybody's email address. Dropping its `where basecamp.is_super_admin()` line used to
+      commit while any signed-in user pulled the full roster with emails. It is now pinned exactly
+      like the other five, and the pins also cover *arity*, so adding a second `list_people(...)`
+      signature is refused too — that used to slip through **and** be granted EXECUTE by `0002`
+      itself.
 - [ ] **`session_replication_role = 'replica'`, set on the database or the role, silences every
       trigger at once** — all the guards and all the audit writing — and `0002` still commits.
       (This one is a superuser-scope setting. Whether Supabase's `postgres` role can actually set
@@ -133,13 +135,24 @@ rest. So the honest reading is "`0002` will not catch a hostile or careless admi
       *before* any trigger runs, so every trigger is still present, still enabled, still pointed at
       the right function, and the function body still matches its checksum. `0002` reads none of
       this and commits. This is the quietest one on the list.
-- [ ] **`0002` only ever looks inside the `basecamp` schema.** A `SECURITY DEFINER` function or a
-      plain view created in `public` that reads `basecamp.entries` runs with its owner's rights and
-      returns the whole catalog to a user with no grants — and `0002` never looks there. This is
-      the most likely one to happen **by accident**, because "add a SECURITY DEFINER helper" is the
-      standard advice for policy recursion, and the SQL editor creates objects as `postgres` by
-      default. Keep helpers that read `basecamp` inside `basecamp`, and create views
-      `with (security_invoker = true)`.
+- [~] **MOSTLY FIXED 2026-08-17 — `0002` used to look only inside the `basecamp` schema.** A
+      `SECURITY DEFINER` function or a view created in `public` that reads `basecamp.entries` runs
+      with its owner's rights and returned the whole catalog to a user with no grants. Thirteen
+      ways of doing that were found; **eleven are now refused** — `0002` follows the dependency
+      graph out of `basecamp` instead of guessing which kinds of object to look at, so views,
+      materialized views, rewrite rules on ordinary tables, and inheritance parents are all caught,
+      in any schema.
+
+      **Two still work, and you should know them:** a definer that reaches `basecamp` through
+      *another function* rather than directly, and a `security_invoker` view that has been given a
+      non-privileged owner. Both need database-owner access. The real fix is to stop `postgres`
+      being both the owner of `basecamp`'s tables and the default owner of everything you create —
+      that kills all thirteen at once — and it needs an ownership change this template cannot make
+      for you.
+
+      **Practical advice unchanged:** keep helpers that read `basecamp` inside `basecamp`, and if
+      you must expose a view, `with (security_invoker = true)` is necessary but **not sufficient** —
+      it resolves as whoever is running, and inside any `SECURITY DEFINER` that is `postgres`.
 - [ ] **A rogue trigger can be attached to an audited table with less than owner access.**
       `service_role` holds the `TRIGGER` privilege on six `basecamp` tables, so a *direct database
       connection* as that role can attach arbitrary logic to them. `0002` checks that the triggers

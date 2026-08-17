@@ -29,10 +29,10 @@
 --
 -- THIS FILE HAS KNOWN GAPS. It commits on several database states that break
 -- invariants it claims to hold — among them a widened policy, a repointed or
--- added audit trigger, a gutted guard body, an ungated `list_people()`, a
--- rewrite rule that voids the audit log, and an owner-rights object in another
--- schema that reads straight past every policy here. None is reachable by an
--- ordinary signed-in user or a service-role API key. They are enumerated in
+-- added audit trigger, a gutted guard body, a rewrite rule that voids the audit
+-- log, and an owner-rights object in another schema that reaches basecamp
+-- through a function or through a view someone re-owned. None is reachable by
+-- an ordinary signed-in user or a service-role API key. They are enumerated in
 -- issues.md, "Known gaps in the security boundary". A clean run means every
 -- check below passed, not that the boundary is airtight.
 
@@ -356,6 +356,215 @@ begin
     raise exception '% view(s) in basecamp bypass RLS — create them WITH (security_invoker = true)', n;
   end if;
 
+  -- THE SCHEMA BOUNDARY IS NOT THE SECURITY BOUNDARY. Every other check in this
+  -- file filters `nspname = 'basecamp'`, which quietly assumes an attacker's
+  -- object would be inside the schema it protects. It need not be, and the most
+  -- likely case is not hostile at all:
+  --
+  --   create function public.all_entries() returns setof basecamp.entries
+  --     language sql security definer set search_path='' as
+  --     $x$ select * from basecamp.entries $x$;
+  --   grant execute on function public.all_entries() to authenticated;
+  --
+  -- PROVEN on PG16 and PG17: a signed-in user with ZERO grants reads 0 rows from
+  -- `basecamp.entries` directly and the whole catalog through that helper, while
+  -- this file printed "security boundary asserted". A definer helper is the
+  -- standard advice for policy recursion, and the SQL Editor creates it owned by
+  -- `postgres` — the very role section 1 pins as owner of every basecamp table,
+  -- so it bypasses RLS by construction. Views are the same story: a plain
+  -- `create view public.x as select * from basecamp.entries` runs with owner
+  -- rights, and a MATERIALIZED view cannot carry security_invoker at all.
+  --
+  -- HOW IT LOOKS, and why each clause is there. The first draft of this check
+  -- used `prosrc ~ 'basecamp'` plus an EXECUTE test, and review defeated it FIVE
+  -- ways, every one proven end to end with a zero-grant signed-in user reading
+  -- the catalog while this file printed "security boundary asserted":
+  --
+  --   1. `BEGIN ATOMIC` bodies. prosrc is EMPTY for a SQL-standard-body function
+  --      — the body lives in prosqlbody — so the regex saw nothing. This is the
+  --      worst of the five: BEGIN ATOMIC is the MODERN RECOMMENDED form, immune
+  --      to search_path attacks, so the most careful author evaded the check.
+  --      Caught now by pg_depend, which only these functions record.
+  --   2. `set search_path='basecamp'` with an unqualified body (`from entries`).
+  --      The text never contains the word. Caught now by reading proconfig.
+  --   3. `BASECAMP.entries`. prosrc keeps raw text and `~` is case-sensitive.
+  --      Hence `~*`.
+  --   4. An owner that merely INHERITS from postgres. The RLS owner-exemption
+  --      uses has_privs_of_role, so a member bypasses without being superuser or
+  --      BYPASSRLS. Hence pg_has_role rather than `= 'postgres'::regrole`.
+  --   5. Indirection and trigger functions. The reachability test was
+  --      `has_function_privilege(...,'execute')`, which is wrong twice over: a
+  --      wrapper reachable by authenticated can read a NO-GRANT view that reads
+  --      basecamp, and the trigger machinery does not consult EXECUTE at all —
+  --      a fact section 2 of this very file already states in prose. Both
+  --      filters are gone. An owner-rights object that reads basecamp is a
+  --      finding whether or not today's grants make it reachable, because a
+  --      grant is one statement away.
+  --
+  -- The view arm no longer text-matches pg_get_viewdef either. That function
+  -- deparses against the CALLER's search_path, so one `alter role postgres set
+  -- search_path = basecamp, public` printed `FROM entries` and silently disabled
+  -- the whole arm — no attacker required. pg_depend is search_path-independent.
+  --
+  -- SCOPE, STATED HONESTLY — and narrower than the first draft claimed. Three
+  -- kinds of object are still missed: a body that builds the reference with
+  -- dynamic SQL (`execute 'select * from basecamp.entries'`), which records no
+  -- dependency and need not contain the word; a definer INSIDE basecamp beyond
+  -- the digest-pinned seven, because this block excludes that schema and nothing
+  -- else enumerates it; and anything reached through a chain this file cannot
+  -- see. The first draft said "no catalog query can close that" about the whole
+  -- class, which was false — four of the five defeats above were closed by
+  -- catalog queries. Only genuine dynamic SQL is out of reach.
+  --
+  -- Deliberately FAIL-CLOSED on text: a definer merely mentioning `basecamp` in
+  -- a comment or a string literal is reported. That is a false positive by
+  -- design; the message says so and tells the reader how to clear it.
+  -- FOLLOW THE DATA, NOT THE OBJECT KIND. A second review round defeated the
+  -- kind-by-kind version three more times, each a single hop in `public` with no
+  -- access to `basecamp` at all:
+  --
+  --   * a definer function selecting from a `security_invoker` VIEW over
+  --     basecamp. The view is safe alone — and was a NEGATIVE CONTROL in the
+  --     suite, so the harness blessed the enabling step. It stops being safe the
+  --     instant an owner-rights caller reads it, because `security_invoker`
+  --     resolves as the CURRENT user and inside a definer that user is postgres;
+  --   * a MATERIALIZED view over that same invoker view — its only rewrite edge
+  --     points at the view, not at basecamp;
+  --   * a REWRITE RULE on an ordinary TABLE. `relkind in ('v','m')` threw that
+  --     row away, and the dependency edge proving it was already being computed
+  --     by the query doing the throwing;
+  --   * legacy table INHERITANCE — a child's RLS is not applied when it is
+  --     scanned through the parent.
+  --
+  -- Enumerating shapes loses to whoever thinks of the next shape. So this walks
+  -- the DEPENDENCY GRAPH transitively instead: seed with every relation in
+  -- basecamp, then close over rewrite-rule edges (which cover views, matviews
+  -- AND rules on plain tables, uniformly) and inheritance edges. Anything the
+  -- closure reaches outside basecamp can surface basecamp rows, whatever kind of
+  -- object it happens to be.
+  --
+  -- `security_invoker` is deliberately NOT an exemption any more, and that is a
+  -- real trade-off: an invoker view over basecamp is genuinely safe on its own,
+  -- and a client who adds one for convenience now gets refused. It is reported
+  -- because safety depends on every future caller, which this file cannot see.
+  --
+  -- SCOPE, STATED HONESTLY — measured, not asserted. Still missed: a body that
+  -- builds the reference with DYNAMIC SQL; a FOREIGN TABLE, which names its
+  -- target remotely rather than through the catalog; and any definer INSIDE
+  -- basecamp beyond the digest-pinned seven, since this block excludes that
+  -- schema and section 2 grants such a function EXECUTE to `authenticated`.
+  -- All three are recorded in issues.md.
+  --
+  -- Two earlier drafts of THIS paragraph each claimed a smaller gap than the
+  -- code had, and both claims were falsified within minutes of being written —
+  -- the first said no catalog query could close the class (four of five defeats
+  -- were closed by catalog queries), the second said only dynamic SQL was out of
+  -- reach (three more one-hop indirections were not). Treat the list above as
+  -- what survived attack on the day it was written, not as a proof of
+  -- completeness, and re-attack it before trusting it.
+  detail := '';
+  for bad in
+    with recursive edges(src, dst) as (
+        -- `dst` can surface rows of `src`: any rewrite rule of dst reads src.
+        -- Covers views, matviews and rules on ordinary tables in one shape.
+        select d.refobjid, rw.ev_class
+          from pg_depend d
+          join pg_rewrite rw on rw.oid = d.objid
+         where d.classid = 'pg_rewrite'::regclass
+           and d.refclassid = 'pg_class'::regclass
+           and rw.ev_class <> d.refobjid
+      union all
+        select i.inhrelid, i.inhparent from pg_inherits i
+    ),
+    tainted(oid) as (
+        select c.oid from pg_class c
+          join pg_namespace n on n.oid = c.relnamespace
+         where n.nspname = 'basecamp'
+      union
+        select e.dst from edges e join tainted t on t.oid = e.src
+    )
+    select ns.nspname || '.' || p.proname as obj,
+           case p.prokind when 'p' then 'SECURITY DEFINER procedure'
+                                   else 'SECURITY DEFINER function' end as kind,
+           p.proowner::regrole::text as owner
+      from pg_proc p
+      join pg_namespace ns on ns.oid = p.pronamespace
+      join pg_roles r on r.oid = p.proowner
+     where ns.nspname not in ('basecamp', 'pg_catalog')
+       and p.prosecdef
+       and (pg_has_role(p.proowner, 'postgres', 'USAGE') or r.rolbypassrls or r.rolsuper)
+       and (p.prosrc ~* '\mbasecamp\M'
+         or exists (select 1 from unnest(coalesce(p.proconfig, '{}'::text[])) cfg
+                     where cfg ~ '^search_path=' and cfg ~* '\mbasecamp\M')
+         or exists (select 1 from pg_depend d
+                     where d.classid = 'pg_proc'::regclass and d.objid = p.oid
+                       and d.refclassid = 'pg_class'::regclass
+                       and d.refobjid in (select oid from tainted))
+         -- UNPINNED search_path + a bare basecamp table name. This one needs no
+         -- DDL from the attacker at all: a definer with no `SET search_path`
+         -- runs with the CALLER's, and an ordinary signed-in user may set their
+         -- own. PROVEN — a plpgsql SECURITY DEFINER in `public` whose body is
+         -- `return query select * from entries;` (unqualified, no SET
+         -- search_path) resolves to nothing under a default search_path, but the
+         -- caller does `set search_path = basecamp` and reads the whole catalog.
+         --
+         -- NOTE for whoever edits this comment next: do NOT paste a dollar-quoted
+         -- function body into any comment in this file. The whole assertion
+         -- section is one dollar-quoted DO block, so a literal pair of dollar
+         -- signs — even inside a comment — closes it early and the file dies
+         -- with a syntax error hundreds of lines further down, pointing at
+         -- innocent SQL. That happened twice while writing this paragraph: once
+         -- for the example, and once for the warning about the example.
+         --
+         -- Narrow on purpose. "Any unpinned definer" is the textbook posture and
+         -- was measured too expensive here: it flags `public.handle_new_user()`,
+         -- Supabase's own documented auth-trigger pattern, so it would refuse a
+         -- large share of real projects and get this file deleted. Requiring a
+         -- bare basecamp TABLE name as well brought false positives on a
+         -- realistic surface to zero while still catching the attack. A client
+         -- table that happens to share a name with one of ours is a fail-closed
+         -- false positive; the message covers it.
+         or (not exists (select 1 from unnest(coalesce(p.proconfig, '{}'::text[])) cfg
+                          where cfg ~ '^search_path=')
+             and exists (select 1 from pg_class bc
+                           join pg_namespace bn on bn.oid = bc.relnamespace
+                          where bn.nspname = 'basecamp'
+                            and bc.relkind in ('r','p','v','m')
+                            -- NOT `\m<name>\M`. `\m` is a word-START boundary and
+                            -- `.` is a non-word character, so that form matches a
+                            -- fully QUALIFIED `app.members` too — and `members`,
+                            -- `entries` and `categories` are among the commonest
+                            -- table names in any application. Measured: three
+                            -- textbook-careful, fully-qualified client definers
+                            -- were refused, none of them exploitable. This form
+                            -- requires the name to be genuinely unqualified.
+                            and p.prosrc ~* ('(^|[^."[:alnum:]_])"?' || bc.relname || '\M'))))
+    union all
+    select ns.nspname || '.' || c.relname,
+           case c.relkind when 'm' then 'materialized view'
+                          when 'v' then 'view'
+                          when 'r' then 'table carrying a rewrite rule or inheriting basecamp'
+                          when 'p' then 'partitioned table reaching basecamp'
+                          when 'f' then 'foreign table reaching basecamp'
+                          else 'relation reaching basecamp' end,
+           c.relowner::regrole::text
+      from tainted t
+      join pg_class c on c.oid = t.oid
+      join pg_namespace ns on ns.oid = c.relnamespace
+      join pg_roles r on r.oid = c.relowner
+     where ns.nspname not in ('basecamp', 'pg_catalog')
+       and (pg_has_role(c.relowner, 'postgres', 'USAGE') or r.rolbypassrls or r.rolsuper)
+  loop
+    detail := detail || format(E'\n    %s (%s, owned by %s)', bad.obj, bad.kind, bad.owner);
+  end loop;
+  if detail <> '' then
+    raise exception 'an object OUTSIDE basecamp can surface its rows with owner rights — every policy in this file is bypassed through it:%',
+                    detail || E'\n  A view, matview, rule or inheritance parent reaching basecamp: drop it, or move the read inside basecamp behind a policy-respecting function.'
+                           || E'\n  WITH (security_invoker = true) is NOT sufficient on its own: an invoker view resolves as the CURRENT user, and inside any SECURITY DEFINER caller that user is postgres.'
+                           || E'\n  A definer function reported here may be a FALSE POSITIVE: if it only MENTIONS basecamp in a comment or a string, rename the mention. That case is fail-closed by design.'
+                           || E'\n  NOTE: moving a helper INTO basecamp is not a fix — this block excludes that schema, and section 2 grants definers there EXECUTE to authenticated.';
+  end if;
+
   -- Each of these gaps was PROVEN by execution against an earlier draft of THIS
   -- file — see supabase/tests/boundary_mutations.sh, which re-proves them.
   if not (has_table_privilege('service_role', 'basecamp.access_grants', 'select')
@@ -512,38 +721,61 @@ begin
   -- `is_super_admin` rewritten `select true /* basecamp.super_admins auth.uid() */`
   -- satisfies every position() check and makes EVERY caller an administrator.
   --
-  -- Unlike the policy set — which you legitimately change — these six bodies
+  -- Unlike the policy set — which you legitimately change — these bodies
   -- ship IDENTICALLY to every stamp of this template, from its own 0001.
   -- So pinning them is exact here too, and any change fails until someone
   -- re-derives the digest, which forces the new body to be read.
+  --
+  -- `list_people` was NOT on this list, and the mention-only check above was all
+  -- that guarded it. That is the weakest place to be lenient: it is the one
+  -- access-model function that returns PII. PROVEN — a body keeping
+  -- `from auth.users` and dropping ONLY the `where basecamp.is_super_admin()`
+  -- line satisfies the mention test, commits, and hands every user's id, email
+  -- and signup date to any signed-in caller, because section 2 grants it EXECUTE
+  -- to `authenticated`. Pinned now, like the rest.
   --
   -- If you deliberately change one, re-derive with:
   --   select proname, md5(prosrc) from pg_proc p
   --     join pg_namespace n on n.oid = p.pronamespace
   --    where n.nspname = 'basecamp' and proname = '<fn>';
+  -- `not exists (… proname = fn AND md5 = expected)` pins *a* function of that
+  -- name, not the callable SURFACE. PROVEN: add an OVERLOAD —
+  -- `basecamp.list_people(p int)` returning `select u.id, u.email … from
+  -- auth.users u` with no admin gate — and the original still satisfies its
+  -- digest, so this loop is content. Worse, section 2 of this very file then
+  -- GRANTS `authenticated` EXECUTE on the overload, and PostgREST resolves
+  -- overloads by argument name, so `/rest/v1/rpc/list_people?p=1` is a live
+  -- route returning every user's email.
+  --
+  -- So the arity is pinned too. Each of these names ships exactly once; a second
+  -- signature is not an extension, it is a second implementation of a decision
+  -- this file exists to pin.
   detail := '';
   for bad in
-    select f.fn from (values
+    select f.fn, count(p.oid) as n from (values
       ('is_super_admin',    '86dc2c53cadb930549083637a031e613'),
       ('has_grant',         '38ada0b645e837604441d462ed96c17e'),
       ('category_has_grant','6397e2fecbe9717e46473fdddd163ab9'),
       ('can_read_entry',    'b725d5ed56514e1b7d4946d4afa5e926'),
       ('can_read_category', '77ac78aa90567fcd5ac6891451605dfa'),
-      ('log_access_change', '41d5a7b6ab0dc5b4cda44d794d729a7e')
+      ('log_access_change', '41d5a7b6ab0dc5b4cda44d794d729a7e'),
+      ('list_people',       '3651a3f932019281566ebfadda9d0708')
     ) as f(fn, expected)
-    where not exists (
-      select 1 from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
-       where ns.nspname = 'basecamp' and p.proname = f.fn and md5(p.prosrc) = f.expected)
+    left join (pg_proc p join pg_namespace ns on ns.oid = p.pronamespace and ns.nspname = 'basecamp')
+      on p.proname = f.fn
+    group by f.fn, f.expected
+    having count(p.oid) <> 1
+        or count(*) filter (where md5(p.prosrc) = f.expected) <> 1
   loop
-    detail := detail || format(E'\n    %s', bad.fn);
+    detail := detail || format(E'\n    %s (%s definition(s) in basecamp)', bad.fn, bad.n);
   end loop;
   if detail <> '' then
-    raise exception 'an access-model function body differs from the one this template ships — READ the new body before re-deriving its digest:%', detail;
+    raise exception 'an access-model function body differs from the one this template ships, or has gained an overload — READ the new body before re-deriving its digest:%', detail;
   end if;
 
   -- `auth.uid` is deliberately absent from this alternation: a policy rewritten
   -- `using (auth.uid() is not null)` names it and grants every signed-in user
-  -- everything. No digest pin on the policy SET, unlike the six function bodies
+  -- everything. No digest pin on the policy SET, unlike the function bodies
   -- above — your policy set legitimately differs, so this is a floor, not an
   -- equality.
   --

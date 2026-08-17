@@ -73,7 +73,7 @@ EXPECTED_WHITELIST_HITS=6
 # silent-reversion failure the whole boundary is defended against, applied to
 # the artifact that is its only proof. Change this number in the same commit as
 # a case, never to make a run go quiet.
-EXPECTED_CASES=73
+EXPECTED_CASES=93
 
 # Cases `0002` is expected to COMMIT rather than refuse, because it ASSIGNS as
 # well as asserts: sections 1-2 pin ownership and fix EXECUTE grants, so
@@ -288,6 +288,85 @@ run_case "EXECUTE on log_access_change to a rogue role"       REFUSED "do \$\$ b
 run_case "column SELECT on the trust root to a rogue role"    REFUSED "do \$\$ begin if not exists (select 1 from pg_roles where rolname='rogue2') then create role rogue2 nologin; end if; end \$\$; grant select (user_id, note) on basecamp.super_admins to rogue2;"
 run_case "USAGE+CREATE on the schema to a rogue role"         REFUSED "do \$\$ begin if not exists (select 1 from pg_roles where rolname='rogue3') then create role rogue3 nologin; end if; end \$\$; grant usage, create on schema basecamp to rogue3;"
 
+echo "=== PART 8: THE SCHEMA BOUNDARY IS NOT THE SECURITY BOUNDARY ==="
+# Every other assertion in both artifacts filters nspname='basecamp', which
+# assumes an attacker's object is inside the schema being protected. PROVEN with
+# a behavioural control: a signed-in user holding zero grants read 0 rows from
+# basecamp.entries directly and the whole catalog through a helper in `public`,
+# while the file printed "security boundary asserted".
+#
+# The first case is the one that happens by ACCIDENT — a definer helper is the
+# standard advice for policy recursion, the SQL Editor creates it owned by
+# postgres, and PostgreSQL grants PUBLIC EXECUTE on a new function by default,
+# so it is reachable by `authenticated` and `anon` even with no GRANT written.
+run_case "a SECURITY DEFINER helper in public reads basecamp" REFUSED "create function public.all_entries() returns setof basecamp.entries language sql security definer set search_path='' as \$x\$ select * from basecamp.entries \$x\$; grant execute on function public.all_entries() to authenticated;"
+run_case "an owner-rights VIEW in public reads basecamp"      REFUSED "create view public.leak as select * from basecamp.entries; grant select on public.leak to authenticated;"
+run_case "a MATERIALIZED VIEW in public reads basecamp"       REFUSED "create materialized view public.mv_leak as select * from basecamp.entries; grant select on public.mv_leak to authenticated;"
+# The negative controls. Over-refusing here would fail every ordinary Supabase
+# project, which is how a security file gets removed from a pipeline.
+# WAS a negative control expecting COMMITTED, until review proved it was
+# blessing the enabling half of a real leak: an invoker view is safe alone, and
+# stops being safe the moment any SECURITY DEFINER reads it, because it then
+# resolves as postgres. Flipped deliberately — see PART 10.
+run_case "an INVOKER view in public over basecamp"         REFUSED "create view public.ok with (security_invoker = true) as select * from basecamp.entries; grant select on public.ok to authenticated;"
+run_case "a definer in public not naming basecamp is fine"    COMMITTED "create function public.unrelated() returns int language sql security definer set search_path='' as \$x\$ select 1 \$x\$; grant execute on function public.unrelated() to authenticated;"
+# list_people is the one access-model function returning PII, and it was guarded
+# only by a mention test. This body keeps `from auth.users` — satisfying that
+# test — and drops ONLY the admin gate.
+run_case "list_people() keeps auth.users but drops its admin gate" REFUSED "create or replace function basecamp.list_people() returns table(id uuid, email text, created_at timestamptz, is_super_admin boolean) language sql stable security definer set search_path='' as \$x\$ select u.id, u.email::text, u.created_at, exists (select 1 from basecamp.super_admins s where s.user_id = u.id) from auth.users u where u.email is not null order by u.email \$x\$;"
+
+echo
+echo "=== PART 9: EVASIONS OF PART 8's FIRST DRAFT — each PROVEN to leak ==="
+# Every one of these read the catalog as a zero-grant signed-in user while the
+# first draft of the cross-schema block printed "security boundary asserted".
+# They are the reason that block reads pg_depend and proconfig rather than only
+# prosrc, matches case-insensitively, uses pg_has_role, and no longer filters on
+# EXECUTE/SELECT reachability.
+#
+# BEGIN ATOMIC has an EMPTY prosrc — and is the modern recommended form, so the
+# most careful author evaded the first draft completely.
+run_case "definer in public with a BEGIN ATOMIC body"      REFUSED "create function public.leak_atomic() returns setof basecamp.entries language sql security definer begin atomic select * from basecamp.entries; end; grant execute on function public.leak_atomic() to authenticated;"
+# search_path names the schema; the body never spells it.
+run_case "definer in public with search_path=basecamp"     REFUSED "create function public.leak_sp() returns setof basecamp.entries language sql security definer set search_path='basecamp' as \$x\$ select * from entries \$x\$; grant execute on function public.leak_sp() to authenticated;"
+# prosrc keeps raw text and `~` is case-sensitive.
+run_case "definer in public naming BASECAMP in upper case" REFUSED "create function public.leak_up() returns setof basecamp.entries language sql security definer set search_path='' as \$x\$ select * from BASECAMP.entries \$x\$; grant execute on function public.leak_up() to authenticated;"
+# The RLS owner-exemption follows role inheritance, so a member of postgres
+# bypasses without being superuser or BYPASSRLS.
+run_case "definer owned by an inheriting member of postgres" REFUSED "do \$\$ begin if not exists (select 1 from pg_roles where rolname='deputy_ev') then create role deputy_ev nologin inherit in role postgres; end if; end \$\$; create function public.leak_dep() returns setof basecamp.entries language sql security definer set search_path='' as \$x\$ select * from basecamp.entries \$x\$; alter function public.leak_dep() owner to deputy_ev; grant execute on function public.leak_dep() to authenticated;"
+# The wrapper never names basecamp; the view it reads holds no grants at all, so
+# a reachability filter excluded both halves.
+run_case "reachable wrapper over a no-grant view on basecamp" REFUSED "create view public.hidden_v as select * from basecamp.entries; create function public.wrapper() returns table(display_name text, launch_url text) language sql security definer set search_path='' as \$x\$ select h.display_name, h.launch_url from public.hidden_v h \$x\$; grant execute on function public.wrapper() to authenticated;"
+# The trigger machinery does not consult EXECUTE — a fact section 2 of 0002
+# already states — so revoking it proves nothing.
+run_case "definer TRIGGER fn in public siphoning basecamp" REFUSED "create table public.spill (display_name text, launch_url text); create table public.inbox (id serial primary key); create function public.siphon() returns trigger language plpgsql security definer set search_path='' as \$x\$ begin insert into public.spill select e.display_name, e.launch_url from basecamp.entries e; return new; end \$x\$; revoke execute on function public.siphon() from public; create trigger t_siphon after insert on public.inbox for each row execute function public.siphon();"
+# pg_get_viewdef deparses against the CALLER's search_path, so this one needed
+# no attacker at all — one convenience setting disabled the whole view arm.
+run_case "leaky view hidden by search_path on the postgres role" REFUSED "create view public.leak_sp_v as select * from basecamp.entries; grant select on public.leak_sp_v to authenticated; alter role postgres in database $DB set search_path = basecamp, public;"
+# An overload is a second implementation of a pinned decision, and section 2
+# grants it EXECUTE. PostgREST routes to it by argument name.
+run_case "list_people gains an ungated overload"           REFUSED "create function basecamp.list_people(p int) returns table(id uuid, email text, created_at timestamptz) language sql stable security definer set search_path='' as \$x\$ select u.id, u.email::text, u.created_at from auth.users u \$x\$;"
+
+echo
+echo "=== PART 10: ONE-HOP INDIRECTION — kind-by-kind checking lost to each ==="
+# Every case: DDL in `public` only, no access to basecamp, and each read the
+# catalog as a zero-grant signed-in user while the previous draft committed.
+# The fix stopped enumerating object KINDS and started walking the dependency
+# graph, so all four fall out of one closure.
+run_case "definer fn over a security_invoker view on basecamp" REFUSED "create view public.iv with (security_invoker = true) as select * from basecamp.entries; create function public.wrap() returns table(display_name text, launch_url text) language sql security definer set search_path='' as \$x\$ select v.display_name, v.launch_url from public.iv v \$x\$; grant execute on function public.wrap() to authenticated;"
+run_case "matview over a security_invoker view on basecamp"    REFUSED "create view public.iv2 with (security_invoker = true) as select * from basecamp.entries; create materialized view public.mv2 as select display_name, launch_url from public.iv2; grant select on public.mv2 to authenticated;"
+# The dependency edge proving this one was already computed by the previous
+# draft's own query, then discarded by `relkind in ('v','m')`.
+run_case "REWRITE RULE on a plain public table reading basecamp" REFUSED "create table public.inbox (id serial primary key); create table public.spill (display_name text, launch_url text); create rule r_siphon as on insert to public.inbox do also insert into public.spill select e.display_name, e.launch_url from basecamp.entries e;"
+# A child's RLS is not applied when it is scanned through the parent.
+run_case "public table made an inheritance parent of basecamp.entries" REFUSED "create table public.allapps (like basecamp.entries); alter table basecamp.entries inherit public.allapps;"
+# Needs NO DDL from the attacker: a definer with no SET search_path runs with the
+# CALLER's, and an ordinary signed-in user sets their own.
+run_case "unpinned plpgsql definer resolving a bare basecamp table" REFUSED "create function public.leak_plsp() returns setof basecamp.entries language plpgsql security definer as \$x\$ begin return query select * from entries; end \$x\$; grant execute on function public.leak_plsp() to authenticated;"
+# information_schema was on the exclusion list; authenticated already holds USAGE
+# on it via PUBLIC, so it was a free hiding place.
+run_case "owner-rights view in information_schema on basecamp" REFUSED "create view information_schema.leak_is as select * from basecamp.entries; grant select on information_schema.leak_is to authenticated;"
+
+echo
 echo
 echo "=== TOTAL: $pass passed, $fail failed (of $EXPECTED_CASES expected) ==="
 if [ "$ran" -ne "$EXPECTED_CASES" ]; then
