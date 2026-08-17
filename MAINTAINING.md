@@ -19,7 +19,7 @@ That makes one thing load-bearing: **the anchor.**
 | **Extracted from upstream commit** | `f880dda` |
 | **Baseline squashed from migration** | `20260814100100` (see `SOURCE-MIGRATION-VERSION` in `0001_baseline.sql`) |
 | **Baseline generated on** | 2026-08-14 (see `GENERATED-ON` in the same file) |
-| **SQL boundary ported forward from** | `806723b` on 2026-08-17 — **`supabase/` only**, see below |
+| **SQL boundary ported forward from** | `b3fba04` on 2026-08-17 — **`supabase/` only**, see below |
 
 **Update the anchor row above in the same commit as every re-extraction**, and
 mirror it in the upstream repo's `issues.md`. Everything below depends on knowing

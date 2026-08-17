@@ -73,7 +73,7 @@ EXPECTED_WHITELIST_HITS=6
 # silent-reversion failure the whole boundary is defended against, applied to
 # the artifact that is its only proof. Change this number in the same commit as
 # a case, never to make a run go quiet.
-EXPECTED_CASES=93
+EXPECTED_CASES=96
 
 # Cases `0002` is expected to COMMIT rather than refuse, because it ASSIGNS as
 # well as asserts: sections 1-2 pin ownership and fix EXECUTE grants, so
@@ -365,6 +365,22 @@ run_case "unpinned plpgsql definer resolving a bare basecamp table" REFUSED "cre
 # information_schema was on the exclusion list; authenticated already holds USAGE
 # on it via PUBLIC, so it was a free hiding place.
 run_case "owner-rights view in information_schema on basecamp" REFUSED "create view information_schema.leak_is as select * from basecamp.entries; grant select on information_schema.leak_is to authenticated;"
+
+echo
+echo "=== PART 11: THE THIRD ROUND'S TWO — one hop further out ==="
+# A definer reaching basecamp through ANOTHER FUNCTION. The inner one is plain
+# INVOKER so arm A skipped it; the outer names only the inner, so arm A skipped
+# that too. Non-atomic bodies record no pg_depend rows, which is why the function
+# taint needs a NAME fixpoint and not just a dependency one. Narrow return type
+# is load-bearing: `returns setof basecamp.entries` would record a rowtype
+# dependency and be caught for the wrong reason.
+run_case "definer reaching basecamp through another function" REFUSED "create function public.rows_() returns setof basecamp.entries language sql stable as \$x\$ select * from basecamp.entries \$x\$; revoke execute on function public.rows_() from public; create function public.catalog_() returns table(display_name text, launch_url text) language sql stable security definer set search_path='' as \$x\$ select r.display_name, r.launch_url from public.rows_() r \$x\$; grant execute on function public.catalog_() to authenticated;"
+# Three hops, to show the closure is not depth-limited.
+run_case "definer reaching basecamp through a 3-hop chain" REFUSED "create function public.h3() returns setof basecamp.entries language sql stable as \$x\$ select * from basecamp.entries \$x\$; create function public.h2() returns setof basecamp.entries language sql stable as \$x\$ select * from public.h3() \$x\$; create function public.h1() returns setof basecamp.entries language sql stable as \$x\$ select * from public.h2() \$x\$; create function public.deep() returns table(display_name text) language sql stable security definer set search_path='' as \$x\$ select d.display_name from public.h1() d \$x\$; grant execute on function public.deep() to authenticated;"
+# Re-owning the intermediate invoker view to an unprivileged role skipped the
+# relation arm's owner filter, while a postgres-owned definer reading it still
+# resolved it as postgres. The owner filter is gone.
+run_case "security_invoker view re-owned to an unprivileged role" REFUSED "do \$\$ begin if not exists (select 1 from pg_roles where rolname='zmal2') then create role zmal2 nologin; end if; end \$\$; create view public.iv3 with (security_invoker = true) as select * from basecamp.entries; alter view public.iv3 owner to zmal2; grant select on public.iv3 to postgres; create function public.tiles3() returns table(display_name text) language sql stable security definer set search_path='' as \$x\$ select v.display_name from public.iv3 v \$x\$; grant execute on function public.tiles3() to authenticated;"
 
 echo
 echo

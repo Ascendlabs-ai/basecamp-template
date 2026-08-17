@@ -135,24 +135,25 @@ rest. So the honest reading is "`0002` will not catch a hostile or careless admi
       *before* any trigger runs, so every trigger is still present, still enabled, still pointed at
       the right function, and the function body still matches its checksum. `0002` reads none of
       this and commits. This is the quietest one on the list.
-- [~] **MOSTLY FIXED 2026-08-17 — `0002` used to look only inside the `basecamp` schema.** A
+- [x] **FIXED 2026-08-17 — `0002` used to look only inside the `basecamp` schema.** A
       `SECURITY DEFINER` function or a view created in `public` that reads `basecamp.entries` runs
-      with its owner's rights and returned the whole catalog to a user with no grants. Thirteen
-      ways of doing that were found; **eleven are now refused** — `0002` follows the dependency
-      graph out of `basecamp` instead of guessing which kinds of object to look at, so views,
-      materialized views, rewrite rules on ordinary tables, and inheritance parents are all caught,
-      in any schema.
+      with its owner's rights and returned the whole catalog to a user with no grants. This was the
+      one most likely to happen **by accident**, because "add a SECURITY DEFINER helper" is the
+      standard advice for policy recursion and the SQL editor creates objects as `postgres`.
 
-      **Two still work, and you should know them:** a definer that reaches `basecamp` through
-      *another function* rather than directly, and a `security_invoker` view that has been given a
-      non-privileged owner. Both need database-owner access. The real fix is to stop `postgres`
-      being both the owner of `basecamp`'s tables and the default owner of everything you create —
-      that kills all thirteen at once — and it needs an ownership change this template cannot make
-      for you.
+      Sixteen ways of doing it were found across three review rounds and **all sixteen are now
+      refused.** `0002` follows the dependency graph out of `basecamp` — through views, materialized
+      views, rewrite rules on ordinary tables, inheritance parents, and now through *other
+      functions* as well — instead of guessing which kinds of object to inspect. Re-owning an
+      intermediate view to an unprivileged account no longer hides it either.
 
-      **Practical advice unchanged:** keep helpers that read `basecamp` inside `basecamp`, and if
-      you must expose a view, `with (security_invoker = true)` is necessary but **not sufficient** —
-      it resolves as whoever is running, and inside any `SECURITY DEFINER` that is `postgres`.
+      **Still true and worth knowing:** `with (security_invoker = true)` is necessary but **not
+      sufficient** on its own. It resolves as whoever is running, and inside any `SECURITY DEFINER`
+      that is `postgres`. Keep helpers that read `basecamp` inside `basecamp`. Three things remain
+      genuinely out of reach of any catalog check — a body that builds its query as dynamic text, a
+      foreign table naming a remote target, and definers inside `basecamp` itself beyond the seven
+      that are checksum-pinned.
+
 - [ ] **A rogue trigger can be attached to an audited table with less than owner access.**
       `service_role` holds the `TRIGGER` privilege on six `basecamp` tables, so a *direct database
       connection* as that role can attach arbitrary logic to them. `0002` checks that the triggers

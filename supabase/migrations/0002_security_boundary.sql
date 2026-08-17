@@ -29,12 +29,11 @@
 --
 -- THIS FILE HAS KNOWN GAPS. It commits on several database states that break
 -- invariants it claims to hold — among them a widened policy, a repointed or
--- added audit trigger, a gutted guard body, a rewrite rule that voids the audit
--- log, and an owner-rights object in another schema that reaches basecamp
--- through a function or through a view someone re-owned. None is reachable by
--- an ordinary signed-in user or a service-role API key. They are enumerated in
--- issues.md, "Known gaps in the security boundary". A clean run means every
--- check below passed, not that the boundary is airtight.
+-- added audit trigger, a gutted guard body, and a rewrite rule that voids the
+-- audit log. None is reachable by an ordinary signed-in user or a service-role
+-- API key. They are enumerated in issues.md, "Known gaps in the security
+-- boundary". A clean run means every check below passed, not that the boundary
+-- is airtight.
 
 begin;
 
@@ -482,6 +481,35 @@ begin
          where n.nspname = 'basecamp'
       union
         select e.dst from edges e join tainted t on t.oid = e.src
+    ),
+    -- FUNCTIONS carry the taint too, and this is the third round's lesson. The
+    -- relation closure alone missed a definer that reaches basecamp through
+    -- ANOTHER FUNCTION: `public.rows_()` (plain INVOKER, names basecamp) wrapped
+    -- by `public.catalog_()` (definer, names only `rows_`). Arm A skipped the
+    -- inner one for not being a definer and the outer one for not naming
+    -- basecamp. PROVEN, and not depth-limited — a 3-hop chain worked.
+    --
+    -- The second leg is a NAME fixpoint, not a dependency one, because non-atomic
+    -- `sql` and `plpgsql` bodies record no pg_depend rows at all — the same fact
+    -- that made prosrc necessary alongside pg_depend in arm A. It is therefore a
+    -- heuristic: it over-matches a function whose body merely contains a tainted
+    -- function's NAME. Measured on a realistic Supabase surface plus a client app
+    -- schema: zero false positives.
+    tfn(oid, nm) as (
+        select p.oid, p.proname
+          from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+         where n.nspname not in ('pg_catalog', 'information_schema')
+           and (p.prosrc ~* '\mbasecamp\M'
+             or exists (select 1 from pg_depend d
+                         where d.classid = 'pg_proc'::regclass and d.objid = p.oid
+                           and d.refclassid = 'pg_class'::regclass
+                           and d.refobjid in (select oid from tainted)))
+      union
+        select p2.oid, p2.proname
+          from pg_proc p2 join pg_namespace n2 on n2.oid = p2.pronamespace
+          join tfn on p2.prosrc ~* ('\m' || tfn.nm || '\M')
+         where n2.nspname not in ('pg_catalog', 'information_schema')
+           and p2.oid <> tfn.oid
     )
     select ns.nspname || '.' || p.proname as obj,
            case p.prokind when 'p' then 'SECURITY DEFINER procedure'
@@ -524,6 +552,7 @@ begin
          -- realistic surface to zero while still catching the attack. A client
          -- table that happens to share a name with one of ours is a fail-closed
          -- false positive; the message covers it.
+         or p.oid in (select oid from tfn)
          or (not exists (select 1 from unnest(coalesce(p.proconfig, '{}'::text[])) cfg
                           where cfg ~ '^search_path=')
              and exists (select 1 from pg_class bc
@@ -551,9 +580,13 @@ begin
       from tainted t
       join pg_class c on c.oid = t.oid
       join pg_namespace ns on ns.oid = c.relnamespace
-      join pg_roles r on r.oid = c.relowner
      where ns.nspname not in ('basecamp', 'pg_catalog')
-       and (pg_has_role(c.relowner, 'postgres', 'USAGE') or r.rolbypassrls or r.rolsuper)
+       -- NO OWNER FILTER, deliberately. It used to require an owner that bypasses
+       -- RLS, and re-owning the intermediate `security_invoker` view to any
+       -- unprivileged role skipped it — while a postgres-owned definer reading
+       -- that view still resolved it as postgres. PROVEN. The taint closure has
+       -- already restricted this to relations that reach basecamp, so ownership
+       -- adds nothing here except a bypass. Measured: zero false positives.
   loop
     detail := detail || format(E'\n    %s (%s, owned by %s)', bad.obj, bad.kind, bad.owner);
   end loop;
