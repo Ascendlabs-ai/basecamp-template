@@ -90,8 +90,8 @@ each of the following was checked and held on your database:
 - every guard trigger exists, is **attached to the table it is supposed to
   watch**, and is enabled **for ordinary traffic** — all three, because the
   weaker forms were defeated: a disabled trigger keeps its definition, a trigger
-  left `ENABLE REPLICA` fires only under `session_replication_role = 'replica'`
-  and never for your app, and counting names without the table let a same-named
+  left `ENABLE REPLICA` fires only for replication traffic and never for your
+  app, and counting names without the table let a same-named
   decoy elsewhere hold the count while the real guard was gone;
 - the audit table is genuinely append-only: `authenticated` holds SELECT and
   nothing else, its mutation and TRUNCATE guards are enabled, and all four audit
@@ -113,10 +113,10 @@ each of the following was checked and held on your database:
   identically to every stamp of this template, so an exact pin is right for them
   — see below for what happens when you change one on purpose;
 - **every policy consults the access model**, and the obvious permit-alls are
-  refused — `using (true)`, `using (auth.uid() is not null)` and
-  `using (is_super_admin() or true)`. This one is a floor rather than an
+  refused. This one is a floor rather than an
   equality, and it is the weakest check in the file in **both** directions: it
-  misses `using (is_super_admin() or auth.uid() is not null)`, and it wrongly
+  misses some predicates that consult the access model and still admit everyone,
+  and it wrongly
   refuses an own-row policy you add on your own table. Read
   [`issues.md`](../issues.md) → "Known gaps in the security boundary" before you
   add a policy;

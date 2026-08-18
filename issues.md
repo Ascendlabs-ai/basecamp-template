@@ -68,8 +68,8 @@ moment they come up.
       `0002_security_boundary.sql`, then — optionally — `0003_seed_categories.sql`, which adds
       four empty starter categories and no schema at all. `0002` checks a long list of things
       about the security boundary and refuses to commit if any of them is wrong. Read **Known gaps in the security
-      boundary** below before you treat a clean run as proof — there are five things it does not
-      catch, and you should know what they are.
+      boundary** below before you treat a clean run as proof — there are things it does not
+      catch, and you should know what kind of thing they are.
 
 - [ ] **Set the Auth URL configuration.** Authentication → URL Configuration: set the Site URL,
       and add `/auth/reset` to the Redirect URLs. Get this wrong and Supabase does **not** error —
@@ -145,44 +145,51 @@ each proven on live PostgreSQL 16 and 17. `0002`'s own closing message is an enu
 true; what is too strong is the shorthand *"if it commits, the boundary holds"* that these
 documents used to print.
 
+**This section describes each gap by class, not by method.** This repository is public and every
+project is stamped from it, so a working recipe written here would be a recipe against every stamp
+rather than a note to yourself. What you need in order to decide well is which *kind* of change
+`0002` will not object to, and that is what is below.
+
 **What it takes to do any of these.** None is reachable by an ordinary signed-in user of your app,
 and **a service-role key does not reach any of them** — it speaks to the Data API, not the
-database, and cannot issue `CREATE POLICY`, `CREATE OR REPLACE FUNCTION`, `DROP TRIGGER` or
-`CREATE RULE`. Both of those were tested directly, with purpose-built roles, and refused every
-time. All but one need DDL as the schema owner: in practice the Supabase SQL editor, or a direct
-database connection as `postgres`. The exception is the last one, which needs only a **direct
-database connection** as a role holding `service_role` — not the API key, but a lower bar than the
-rest. So the honest reading is "`0002` will not catch a hostile or careless administrator", not
-"your app is open".
+database, and cannot issue DDL at all. Both of those were tested directly, with purpose-built
+roles, and refused every time. Almost all of these need DDL as the schema owner: in practice the
+Supabase SQL editor, or a direct database connection as `postgres`. One needs less than full
+ownership, but still needs a **direct database connection** rather than any API key. So the honest
+reading is "`0002` will not catch a hostile or careless administrator", not "your app is open".
 
-- [ ] **A policy can be widened without `0002` noticing.** It rejects `using (true)`, but
-      `using (is_super_admin() or auth.uid() is not null)` passes — and that makes the whole
-      catalog, the administrator roster, and the audit log readable by any signed-in user. Adding a
-      brand-new wide-open policy passes too.
-- [ ] **An audit trigger can be pointed somewhere else.** `0002` checks the trigger's *name*, table
-      and enabled flag, never which function it calls. Repoint it and access changes stop being
-      recorded while `0002` reports "4 enabled audit writers".
-- [ ] **Five guard functions have no body check.** Emptying `prevent_last_super_admin_delete`
-      lets the last administrator be deleted — which locks you out of your own project.
+- [ ] **A policy can be widened without `0002` noticing.** It rejects the obvious permit-alls, but
+      a predicate that *mentions* the access model while still admitting every signed-in user gets
+      past it. Adding a brand-new wide-open policy passes too. Everything the policies protect is
+      in range — the catalog, the administrator roster and the audit log. **Read policy changes
+      yourself; `0002` is not a substitute for reviewing them.**
+- [ ] **An audit trigger can be pointed somewhere else.** `0002` checks each trigger's *name*, table
+      and enabled flag, never which function it actually calls. So a trigger can be present,
+      correctly named and enabled while doing nothing at all, and `0002` will still report its full
+      count of enabled audit writers.
 - [x] **FIXED 2026-08-17 — `list_people()` had no exact body check**, and it is the function that
-      returns everybody's email address. Dropping its `where basecamp.is_super_admin()` line used to
-      commit while any signed-in user pulled the full roster with emails. It is now pinned exactly
+      returns everybody's email address. Relaxing its own administrator check used to commit while
+      any signed-in user pulled the full roster with emails. It is now pinned exactly
       like the other five, and the pins also cover *arity*, so adding a second `list_people(...)`
       signature is refused too — that used to slip through **and** be granted EXECUTE by `0002`
       itself.
-- [ ] **`session_replication_role = 'replica'`, set on the database or the role, silences every
-      trigger at once** — all the guards and all the audit writing — and `0002` still commits.
+- [ ] **Not every guard function's body is checked.** The functions that decide access are pinned
+      by checksum, but several of the guards around them are not, so one can be hollowed out and
+      still satisfy `0002`. One of those guards is what stops the last administrator being deleted,
+      and losing it locks you out of your own project.
+- [ ] **A single database- or role-level setting can silence every trigger at once** — all the
+      guards and all the audit writing together — and `0002` still commits.
       (This one is a superuser-scope setting. Whether Supabase's `postgres` role can actually set
       it was **not** verified — treat this bullet as unconfirmed on Supabase specifically; it is
       proven on a self-hosted cluster.)
-- [ ] **A rewrite rule on the audit table makes the audit log stop recording, invisibly.**
-      `create rule ... on insert to basecamp.access_audit do instead nothing` throws the row away
-      *before* any trigger runs, so every trigger is still present, still enabled, still pointed at
-      the right function, and the function body still matches its checksum. `0002` reads none of
-      this and commits. This is the quietest one on the list.
-- [x] **FIXED 2026-08-17 — `0002` used to look only inside the `basecamp` schema.** A
-      `SECURITY DEFINER` function or a view created in `public` that reads `basecamp.entries` runs
-      with its owner's rights and returned the whole catalog to a user with no grants. This was the
+- [ ] **The audit log can be made to stop recording, invisibly.** A write can be discarded *before*
+      any trigger runs, which leaves every trigger present, enabled, pointed at the right function
+      and matching its checksum. `0002` reads none of this and commits. This is the quietest one on
+      the list: if the audit log matters to you, check every so often that it is still gaining rows,
+      because nothing else will tell you.
+- [x] **FIXED 2026-08-17 — `0002` used to look only inside the `basecamp` schema.** An object
+      created in `public` that reads `basecamp` data could run with its owner's rights and return
+      the whole catalog to a user with no grants. This was the
       one most likely to happen **by accident**, because "add a SECURITY DEFINER helper" is the
       standard advice for policy recursion and the SQL editor creates objects as `postgres`.
 
@@ -190,28 +197,27 @@ rest. So the honest reading is "`0002` will not catch a hostile or careless admi
       refused.** `0002` follows the dependency graph out of `basecamp` — through views, materialized
       views, rewrite rules on ordinary tables, inheritance parents, and now through *other
       functions* as well — instead of guessing which kinds of object to inspect. Re-owning an
-      intermediate view to an unprivileged account no longer hides it either.
+      intermediate object to an unprivileged account no longer hides it either.
 
       **Still true and worth knowing:** `with (security_invoker = true)` is necessary but **not
       sufficient** on its own. It resolves as whoever is running, and inside any `SECURITY DEFINER`
-      that is `postgres`. Keep helpers that read `basecamp` inside `basecamp`. Three things remain
-      genuinely out of reach of any catalog check — a body that builds its query as dynamic text, a
-      foreign table naming a remote target, and definers inside `basecamp` itself beyond the seven
-      that are checksum-pinned.
+      that is `postgres`. **Keep helpers that read `basecamp` inside `basecamp`** — that one habit
+      avoids this whole class. A few shapes stay out of reach of any catalog check, chiefly
+      anything that assembles its query at run time instead of declaring it, and definers inside
+      `basecamp` itself beyond those that are checksum-pinned.
 
-- [ ] **A rogue trigger can be attached to an audited table with less than owner access.**
-      `service_role` holds the `TRIGGER` privilege on six `basecamp` tables, so a *direct database
-      connection* as that role can attach arbitrary logic to them. `0002` checks that the triggers
-      it expects are present; it never checks that nothing else was added. (A service-role API key
-      still cannot do this — PostgREST does not issue DDL.)
+- [ ] **`0002` never checks that nothing *extra* was added.** It verifies that the triggers it
+      expects are present; a trigger it does not know about, attached to an audited table, is
+      invisible to it. Doing that needs more than an API key but less than full ownership. (A
+      service-role API key still cannot do it — PostgREST does not issue DDL.)
 
 Two smaller ones worth knowing:
 
-- [ ] **`0002` refuses a perfectly good policy of your own.** If you add a table and give it
-      `using (user_id = auth.uid())` — the tightest rule there is — `0002` calls it a permit-all
-      and refuses. Do not delete the policy to get past it, and do not stop running `0002`. Until
-      this is fixed, either keep such policies in a schema other than `basecamp`, or add the
-      policy after `0002` has run.
+- [ ] **`0002` refuses a perfectly good policy of your own.** If you add a table and give it an
+      own-row rule — restricting each person to their own rows, the tightest rule there is —
+      `0002` calls it a permit-all and refuses. Do not delete the policy to get past it, and do not
+      stop running `0002`. Until this is fixed, either keep such policies in a schema other than
+      `basecamp`, or add the policy after `0002` has run.
 - [ ] **`0002` checks that `authenticated` can SELECT `entries` and the audit log, but not the
       other five tables.** If `0001` only half-applies, you can end up with a database `0002`
       signs off on and an admin screen that fails with `permission denied`. Applying `0001` with
