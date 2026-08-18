@@ -53,6 +53,23 @@ const FORBIDDEN: ReadonlyArray<{ label: string; re: RegExp }> = [
   { label: "originating org's other products", re: /\bLeadWorks\b|leadworksai/i },
   { label: "a trust root this schema does not own", re: /public\.user_roles/ },
   { label: "a maintainer's personal address", re: /@kdfaegis\.com|@madbrains\.ai/i },
+  // Derived from this repo's actual history, not guessed: `git log --all -p` for
+  // every occurrence of both terms turned up exactly one file that ever carried
+  // them (the walkthrough spec removed in the same commit as these two lines),
+  // and every hit is now gone from the tracked tree. These patterns exist so a
+  // future re-add of that class of document — or any other maintainer note that
+  // names the same two things — gets caught instead of relying on someone
+  // remembering to scrub it by hand.
+  //
+  // "Kevin" is common enough as an English word-fragment-free proper noun that a
+  // loose match would risk the same false-positive class this file already
+  // warns about, so it stays case-sensitive: it catches the maintainer's name as
+  // written, not every lowercase incidental use of the word.
+  { label: "the maintainer's first name", re: /\bKevin\b/ },
+  // Case-insensitive: unlike the maintainer's name this is a coined repository
+  // name with no competing ordinary-English meaning, so there is no
+  // false-positive cost to also catching "appcloset" or "APPCLOSET".
+  { label: "a test stamp repository name", re: /\bAppCloset\b/i },
   // Files the extraction deletes. A surviving reference sends a client to a
   // path that does not exist, which reads as a broken repo.
   //
@@ -102,25 +119,6 @@ const ALLOWED = new Map<string, ReadonlyArray<string>>([
   // silently covers a real hit later, so it is gone — do not restore it without
   // a hit to point at.
   ["MAINTAINING.md", ["an upstream-only path"]],
-  // The Stream B specification, committed so the next maintainer of the Catalog
-  // admin can read what was asked for. It names the originating organisation
-  // ONCE, in a sentence describing where a stamped repository's starting code
-  // comes from — a fact that is true, already public (this repository is public
-  // and lives under that organisation), and unavoidable in a document whose
-  // subject is the template pipeline itself.
-  //
-  // SCOPED TO THAT ONE LABEL DELIBERATELY. This file is not exempt from the
-  // credential patterns, the infrastructure identifiers, or anything else: if a
-  // future revision of the spec carries a JWT or a project ref, this suite still
-  // fails on it. Nothing else in the repository is exempt from the organisation
-  // pattern either — this is the only entry, and it should stay the only one.
-  //
-  // It is a maintainer document in the same class as MAINTAINING.md: a stamped
-  // client can delete it, and its own header says so.
-  [
-    "docs/buildkit-walkthrough-2-revisions-2026-08-18.md",
-    ["originating organisation"],
-  ],
 ]);
 
 test("no tracked file leaks the originating organisation, its infrastructure, or a credential", () => {
