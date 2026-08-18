@@ -161,3 +161,73 @@ export const NAV_GROUP_LABEL: Record<NavGroup, string> = {
   operations: "Operations",
   external: "External",
 };
+
+// ---------------------------------------------------------------------------
+// Catalog administration (basecamp.categories / basecamp.entries)
+// ---------------------------------------------------------------------------
+
+/**
+ * A category as the Catalog admin screen needs it: every column a person can
+ * edit, plus the identity.
+ *
+ * Deliberately NOT `CatalogCategory` from types/catalog.ts. That type nests the
+ * entries inside the category because the home page renders them that way; this
+ * screen holds the two lists side by side so an entry can be moved between
+ * categories, and nesting would mean rebuilding the tree on every such move.
+ *
+ * `description` is `string` and not `string | null` because the column is NOT
+ * NULL with a not-blank CHECK. (`CatalogCategory` widens it to nullable, which
+ * has always been looser than the schema.)
+ */
+export type AdminCategory = {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  sort_order: number;
+};
+
+/**
+ * An entry as the Catalog admin screen needs it — `CatalogEntry` plus the
+ * `category_id` that says where it sits.
+ *
+ * The home page's `ENTRY_COLUMNS` deliberately omits `category_id`: there the
+ * entries arrive already nested inside their category, so the column would be
+ * redundant. Here it is the field being edited.
+ */
+export type AdminEntry = import("@/types/catalog").CatalogEntry & {
+  category_id: string;
+  /**
+   * Which sidebar group the entry sits in, or NULL for "not in the sidebar".
+   *
+   * `CatalogEntry` and its `ENTRY_COLUMNS` deliberately omit this: the home page
+   * never reads it, and the shell layout fetches it in a query of its own. The
+   * admin screen needs it because it is the ONLY control over whether a
+   * launchable entry appears in the sidebar at all — an entry with no group is
+   * invisible there however launchable it is, which is the first thing to check
+   * when something is "missing". Added here rather than to `ENTRY_COLUMNS`, so
+   * the home page keeps fetching exactly what it renders.
+   */
+  nav_group: NavGroup | null;
+  /**
+   * The concurrency token for an edit, maintained by the `set_updated_at`
+   * trigger on `basecamp.entries`.
+   *
+   * The edit dialog freezes a whole row when it opens and writes all of it back
+   * on save. Matching on this column means a save that would have silently
+   * overwritten somebody else's change — or undone a reorder made while the
+   * dialog sat open — instead writes nothing and returns zero rows, which the
+   * screen already knows how to report. Never written by the app.
+   */
+  updated_at: string;
+};
+
+/**
+ * The Access screen's view segments: the design's two, plus Types and the
+ * append-only Audit log.
+ *
+ * Here rather than in `ViewSwitch.tsx`, which is now generic over its segments
+ * and knows nothing about access administration — a screen-agnostic control
+ * should not be the home of one screen's vocabulary.
+ */
+export type AdminView = "person" | "matrix" | "types" | "audit";

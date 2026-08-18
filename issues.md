@@ -37,10 +37,12 @@ still makes sense.
 - [ ] **Put your own name on it.** Four places — name, logo, colours, icons — all shipping as
       neutral placeholders. The table of exactly which files is in `README.md` under Rebranding.
 
-- [ ] **Delete `MAINTAINING.md`.** It's for whoever re-extracts this template from the private app
-      it came from. If you stamped this, it isn't for you.
+- [ ] **Delete `MAINTAINING.md` and `docs/`.** Both are for whoever maintains the template rather
+      than for you: `MAINTAINING.md` covers re-extracting it from the private app it came from, and
+      `docs/` holds the specification the Catalog admin screens were built from. Nothing in the app
+      reads either. If you stamped this, they aren't for you.
 
-- [ ] **Add your first few catalog entries** and confirm somebody with no grants sees an empty
+- [ ] **Add your first few catalog entries** in Admin → Catalog, and confirm somebody with no grants sees an empty
       catalog rather than an error. That's the check that proves access is actually working.
 
 ## In progress
@@ -62,9 +64,10 @@ moment they come up.
       Skip this and every request fails with `PGRST106`, the app shows an error, and nothing in the
       database looks wrong — it is a genuinely hard failure to diagnose.
 
-- [ ] **Apply the two SQL files, in order:** `supabase/migrations/0001_baseline.sql`, then
-      `0002_security_boundary.sql`. `0002` checks a long list of things about the security
-      boundary and refuses to commit if any of them is wrong. Read **Known gaps in the security
+- [ ] **Apply the SQL files, in order:** `supabase/migrations/0001_baseline.sql`, then
+      `0002_security_boundary.sql`, then — optionally — `0003_seed_categories.sql`, which adds
+      four empty starter categories and no schema at all. `0002` checks a long list of things
+      about the security boundary and refuses to commit if any of them is wrong. Read **Known gaps in the security
       boundary** below before you treat a clean run as proof — there are five things it does not
       catch, and you should know what they are.
 
@@ -87,6 +90,48 @@ moment they come up.
 
 - [ ] **Deploy to Vercel.** Connect this repository and set the same two environment variables
       there. Nothing else is needed.
+
+## Review record — Admin → Catalog (Stream B)
+
+**Committed as a recorded override: `threshold_met: false`, zero HARD findings.**
+
+The naysayer quality gate ran its full three iterations against this change set.
+Iteration 1 found 4 hard and ~28 soft/minor items; iteration 2 confirmed all 32
+fixed but caught one NEW hard defect introduced *by* those fixes (the
+`updated_at` concurrency guard wedged the edit dialog and its message promised a
+reopen no code performed) — found independently by two reviewers. Iteration 3
+confirmed that defect properly fixed and returned **zero hard findings**, plus
+six soft/minor items which were then fixed as well.
+
+The gate's own arithmetic still scores the third review at 6.0/10, below its 8.0
+threshold, because that score is computed on the review as delivered rather than
+on the state after its findings were closed. Nothing hard remains, and nothing
+remaining is reachable by a client using a stamped app with client-held
+credentials. The last round of fixes is covered by the gates (127 tests,
+typecheck, lint, production build), by fresh installs on PostgreSQL 16 and 17,
+by the mutation suite at 96/96 on both arms, and by targeted live re-tests — but
+not by a fourth adversarial round, since three is the cap.
+
+One item is deliberately left open rather than fixed: `templateHygiene.test.ts`
+now exempts the originating organisation's name for `docs/`, the specification
+this work was built from. That is a decision, not a defect — the file is a
+maintainer document a stamped client can delete, and the exemption is scoped to
+one file and one pattern (verified: a credential in that same file still fails
+the suite). Note that the spec also names a maintainer by first name and names a
+test stamp repository, and the guard has no pattern for either.
+
+## Known limits
+
+- **The admin screens read every row in one request, and refuse to render past
+  PostgREST's cap.** `/admin/catalog` and `/admin/access` compare the rows they
+  received against an exact count and show an error instead of a partial
+  picture — deliberately, because the slug de-duplication and the reorder
+  arithmetic both reason over "every row that exists", and a silently short read
+  would renumber a subset or propose a slug that is already taken. The cap is
+  PostgREST's `max-rows`, 1000 on a default Supabase project. A catalog that
+  large would make the admin screens unusable rather than wrong; the fix is
+  either paging those reads or raising `max-rows`. No client is near it, and
+  nothing about it is a security question.
 
 ## Known gaps in the security boundary
 

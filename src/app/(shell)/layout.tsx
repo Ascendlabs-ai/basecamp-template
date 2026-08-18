@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 
 import AppShell from "@/components/shell/AppShell";
 import { createClient } from "@/lib/supabase/server";
+import { isSuperAdmin } from "@/lib/isSuperAdmin";
 import { initialsFromEmail } from "@/lib/adminAccess";
 import type { NavGroup } from "@/types/admin";
 import type { ShellNavItem } from "@/types/shell";
@@ -50,7 +51,7 @@ export default async function ShellLayout({ children }: { children: React.ReactN
   // and every page in the app paid them SEQUENTIALLY before its own queries
   // even started. That serial latency is what made the loading skeleton
   // visible. admin/access/page.tsx already used this shape.
-  const [{ data, error, count }, { data: isSuperAdmin, error: roleError }] = await Promise.all([
+  const [{ data, error, count }, role] = await Promise.all([
     supabase
       .from("entries")
       .select("id, slug, display_name, launch_url, nav_group, sort_order", { count: "exact" })
@@ -58,7 +59,9 @@ export default async function ShellLayout({ children }: { children: React.ReactN
       .not("nav_group", "is", null)
       .order("sort_order", { ascending: true })
       .order("slug", { ascending: true }),
-    supabase.rpc("is_super_admin"),
+    // Request-scoped and deduplicated: the home page and the Catalog admin ask
+    // the same question, and this is the one call all three share.
+    isSuperAdmin(),
   ]);
 
   if (error) {
@@ -108,13 +111,9 @@ export default async function ShellLayout({ children }: { children: React.ReactN
   // access control. That lives in the policies on access_grants and in
   // list_people(), both of which refuse a non-super_admin regardless of what
   // this returns.
-  if (roleError) {
-    // Fails closed (canAdmin stays false, the Admin row hides) which is the
-    // right direction — but silently. An administrator losing the Admin link with no line
-    // anywhere is undiagnosable, and the categories query above already logs.
-    console.error("[basecamp] is_super_admin RPC failed:", roleError.code, roleError.message);
-  }
-  const canAdmin = isSuperAdmin === true;
+  // Fails closed (canAdmin stays false, the Admin rows hide), which is the right
+  // direction; `isSuperAdmin` does the logging so the failure is not silent.
+  const canAdmin = role.value;
 
   const email = user.email ?? "";
 

@@ -13,6 +13,7 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
 import { sameOriginPath } from "@/lib/safeRedirect";
+import { classifySignInError } from "@/lib/signInError";
 import { createClient } from "@/lib/supabase/client";
 import { APP_NAME, CATALOG_TAGLINE } from "@/lib/brand";
 
@@ -39,7 +40,28 @@ export default function LoginForm() {
       // Deliberately not surfacing Supabase's raw message. It distinguishes
       // "user not found" from "wrong password", which turns this form into an
       // account-enumeration oracle on a Supabase project shared with client-facing apps.
-      setError("That email and password combination did not work.");
+      //
+      // But it does NOT follow that every failure is the user's. An invalid or
+      // missing anon key answers 401, and this form used to report that as the
+      // email and password being wrong — sending the person to reset a password
+      // that was always correct, then to delete and recreate accounts until the
+      // project's email rate limit stopped them. `classifySignInError` splits
+      // the two: what you can fix by typing something else, and what you
+      // cannot. Both messages are the same for every caller, so neither
+      // discloses whether an account exists.
+      const failure = classifySignInError(signInError);
+      // Server-side too. A configuration failure is invisible in the browser
+      // console of the person it happens to, and it is the one an operator
+      // needs to see.
+      if (failure.kind === "configuration") {
+        console.error(
+          "[basecamp] sign-in configuration failure:",
+          signInError.status,
+          signInError.code,
+          signInError.message,
+        );
+      }
+      setError(failure.message);
       setPending(false);
       return;
     }

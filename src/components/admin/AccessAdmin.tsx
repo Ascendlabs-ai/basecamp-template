@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import Alert from "@mui/material/Alert";
@@ -18,7 +18,6 @@ import {
   deleteTypeKey,
   describeError,
   effectiveEntryCount,
-  isTransportFailure,
   indexGrants,
   indexMembers,
   indexTypeGrants,
@@ -30,6 +29,7 @@ import {
 import { createClient } from "@/lib/supabase/client";
 import { createRecoverySender } from "@/lib/supabase/recovery";
 import type {
+  AdminView,
   AuditRow,
   Grant,
   GrantCategory,
@@ -45,62 +45,8 @@ import AuditLog from "./AuditLog";
 import GrantsByPerson from "./GrantsByPerson";
 import PersonList from "./PersonList";
 import TypesAdmin from "./TypesAdmin";
-import ViewSwitch, { type AdminView } from "./ViewSwitch";
-
-/**
- * How long before the user is TOLD a write has not landed.
- *
- * Deliberately not a claim release. An earlier version released the key when
- * this fired, which re-opened the target while the request was still running:
- * a second click took the delete branch and sent `.eq("id", "optimistic:e:…")`
- * against a uuid column, surfacing as "Could not revoke access (22P02)". So the
- * NOTIFICATION is bounded and the claim is not — a request that never settles
- * leaves that one cell spinning until a reload, which is what the timeout
- * message tells the user to do. That is the accepted trade, recorded here
- * because the two are easy to confuse.
- */
-const WRITE_TIMEOUT_MS = 15_000;
-const TIMEOUT_MESSAGE = "That change timed out. Reload to see the current access state.";
-
-/** A losing race must not leave a 15-minute-a-day drip of dangling timers. */
-function deadline(ms: number): { promise: Promise<string>; cancel: () => void } {
-  let handle: ReturnType<typeof setTimeout>;
-  const promise = new Promise<string>((resolve) => {
-    handle = setTimeout(() => resolve(TIMEOUT_MESSAGE), ms);
-  });
-  return { promise, cancel: () => clearTimeout(handle) };
-}
-
-/**
- * Message for a failed WRITE — and a resync when the failure is ambiguous.
- *
- * Zero rows back cannot distinguish "RLS refused" from "someone else did it",
- * so those paths already refresh. A TRANSPORT failure is ambiguous for the same
- * reason — the request may have reached Postgres and committed before the
- * connection died — and every write path needs the same treatment. Inserts got
- * it first and the deletes were missed, which was backwards: this file argues
- * that a stale "granted" is a lie about access while a stale "not granted" is
- * only a lost write, and the deletes are the ones that go stale-granted.
- *
- * A returned SQLSTATE is real evidence the database refused — 23505, 42501 —
- * and needs no refresh. `describeError` yields "network error" precisely when
- * there is no code, which is the case that does.
- */
-function failedWrite(
-  prefix: string,
-  error: { code?: string } | null,
-  router: { refresh: () => void },
-): string {
-  // `!error` reaches here when the insert returned neither an error nor a row —
-  // the MOST ambiguous outcome there is, and an earlier version routed exactly
-  // that case to the no-refresh branch. Both it and a transport failure get a
-  // resync; only a real SQLSTATE is evidence the database refused.
-  if (isTransportFailure(error)) {
-    router.refresh();
-    return `${prefix} — it is unclear whether it applied. Reloading the current state.`;
-  }
-  return `${prefix} (${describeError(error)}).`;
-}
+import ViewSwitch from "./ViewSwitch";
+import { failedWrite, useAdminWrite } from "./useAdminWrite";
 
 /** Stated in two places — the tooltip and an aria-describedby target. */
 const INVITE_REASON =
@@ -163,24 +109,12 @@ export default function AccessAdmin({
   const [grants, setGrants] = useState<Grant[]>(initialGrants);
   const [members, setMembers] = useState<Member[]>(initialMembers);
   const [typeGrants, setTypeGrants] = useState<TypeGrant[]>(initialTypeGrants);
-  const [pending, setPending] = useState<Set<string>>(new Set());
-  const [error, setError] = useState<string | null>(null);
-  // Separate from `error` so a success confirmation is not styled as a failure.
-  const [notice, setNotice] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string>(people[0]?.id ?? "");
 
-  /**
-   * The authoritative in-flight set. `pending` (state) is a MIRROR for
-   * rendering only.
-   *
-   * The claim must be synchronous and a setState updater is not: React runs an
-   * updater eagerly only while the fiber has no pending lanes, so after the
-   * first toggle of a session it is deferred to render. A previous version read
-   * a flag set inside the updater — every toggle after the first read stale,
-   * returned without writing, and still stranded its key. The feature was dead
-   * after one click.
-   */
-  const inFlight = useRef<Set<string>>(new Set());
+  // The claim/timeout/resync machinery, shared with Admin -> Catalog. It used to
+  // be defined in this file; the comments explaining why each piece is shaped
+  // the way it is moved with it. See ./useAdminWrite.
+  const { run, pending, error, notice, setError, setNotice, resync } = useAdminWrite();
 
   /**
    * Re-sync when the server sends a new snapshot. `useState` ignores later prop
@@ -284,84 +218,6 @@ export default function AccessAdmin({
     [router, searchParams],
   );
 
-  /**
-   * Shared wrapper: claim, run, release, and surface anything that goes wrong.
-   *
-   * Resolves TRUE only when the work completed with no message — callers that
-   * need to know (the create-type form clears its fields on success only) can
-   * await it. A skipped duplicate claim resolves false, which is correct: this
-   * call did nothing.
-   */
-  const run = useCallback(
-    async (key: string, work: () => Promise<string | null>): Promise<boolean> => {
-      if (inFlight.current.has(key)) return false;
-      inFlight.current.add(key);
-      setPending(new Set(inFlight.current));
-
-      // The CLAIM is released when the request actually settles, not when the
-      // deadline fires. Releasing at the deadline while the request was still
-      // running re-opened the target: a second click re-entered the handler,
-      // found the optimistic row still present, took the DELETE branch and sent
-      // `.eq("id", "optimistic:e:…")` against a uuid column — surfacing as
-      // "Could not revoke access (22P02)".
-      const release = () => {
-        inFlight.current.delete(key);
-        setPending(new Set(inFlight.current));
-      };
-
-      const settled = work()
-        .then(
-          (message) => ({ message, timedOut: false, threw: false }),
-          (cause) => {
-            console.error("[basecamp] admin mutation threw:", cause);
-            return {
-              message: "Could not save the change. Reloading the current state.",
-              timedOut: false,
-              // Distinguished from an ordinary refusal: a returned message is a
-              // deliberate "no" from a path that has already put the screen
-              // right, whereas a THROW means local state may be mid-flight.
-              threw: true,
-            };
-          },
-        )
-        .finally(release);
-
-      const timer = deadline(WRITE_TIMEOUT_MS);
-      const outcome = await Promise.race([
-        settled,
-        timer.promise.then((message) => ({ message, timedOut: true, threw: false })),
-      ]);
-      timer.cancel();
-
-      if (outcome.message) setError(outcome.message);
-      if (outcome.threw) {
-        // The message says "Reloading the current state", so reload. Without
-        // this it was a promise the code did not keep: a throw landing after an
-        // optimistic insert left the fabricated grant on screen indefinitely
-        // while the user read that a reload was under way — a stale "granted",
-        // which this file elsewhere identifies as the more dangerous direction
-        // to be wrong in.
-        router.refresh();
-        return false;
-      }
-      if (outcome.timedOut) {
-        // The request is still in flight and its own handlers may still mutate
-        // state. Reload rather than let the screen move under a user who was
-        // just told the change did not land.
-        void settled.then(() => router.refresh());
-        return false;
-      }
-      // NO blanket refresh here. Adding one made `isTransportFailure`
-      // decorative: every deliberate refusal round-tripped the page anyway —
-      // a duplicate slug, a system-type delete, an FK-in-use, and even
-      // createType's purely client-side "no letters or digits" validation,
-      // which never touches the database. Each path that genuinely needs a
-      // resync already calls router.refresh() itself.
-      return outcome.message === null;
-    },
-    [router],
-  );
-
   /** Grant or revoke an INDIVIDUAL entry/category for one person. */
   const toggleGrant = useCallback(
     (userId: string, target: ToggleTarget) =>
@@ -393,7 +249,7 @@ export default function AccessAdmin({
             // restoring it locally would leave the matrix asserting access that
             // no longer exists — the direction this file calls the more serious
             // one. Only a real SQLSTATE is evidence the database refused.
-            return failedWrite("Could not revoke access", delError, router);
+            return failedWrite("Could not revoke access", delError, resync);
           }
           if (!data || data.length === 0) {
             // Zero rows has two causes the client cannot tell apart: RLS
@@ -435,7 +291,7 @@ export default function AccessAdmin({
           .single();
         if (insError || !data) {
           setGrants((gs) => gs.filter((g) => g.id !== tempId));
-          return failedWrite("Could not grant access", insError, router);
+          return failedWrite("Could not grant access", insError, resync);
         }
         // Append-if-missing, not a bare map. A resync landing between the
         // insert and its response discards the optimistic row by identity, and
@@ -448,7 +304,7 @@ export default function AccessAdmin({
         );
         return null;
       }),
-    [grants, currentUserId, router, run],
+    [grants, currentUserId, resync, router, run],
   );
 
   /** Grant or revoke an entry/category for a whole TYPE. */
@@ -469,7 +325,7 @@ export default function AccessAdmin({
             .from("type_grants").delete().eq("id", existing.id).select("id");
           if (delError || !data || data.length === 0) {
             setTypeGrants((gs) => [...gs, existing]);
-            if (delError) return failedWrite("Could not remove the type grant", delError, router);
+            if (delError) return failedWrite("Could not remove the type grant", delError, resync);
             router.refresh();
             return "That change did not apply. Reloading the current access state.";
           }
@@ -496,7 +352,7 @@ export default function AccessAdmin({
           .single();
         if (insError || !data) {
           setTypeGrants((gs) => gs.filter((g) => g.id !== tempId));
-          return failedWrite("Could not add the type grant", insError, router);
+          return failedWrite("Could not add the type grant", insError, resync);
         }
         setTypeGrants((gs) =>
           gs.some((g) => g.id === tempId)
@@ -505,7 +361,7 @@ export default function AccessAdmin({
         );
         return null;
       }),
-    [typeGrants, router, run],
+    [typeGrants, resync, router, run],
   );
 
   /** Set or clear a person's type and department. `typeId === null` removes it. */
@@ -522,7 +378,7 @@ export default function AccessAdmin({
             .from("members").delete().eq("id", existing.id).select("id");
           if (delError || !data || data.length === 0) {
             setMembers((ms) => [...ms, existing]);
-            if (delError) return failedWrite("Could not remove the type", delError, router);
+            if (delError) return failedWrite("Could not remove the type", delError, resync);
             router.refresh();
             return "That change did not apply. Reloading the current state.";
           }
@@ -541,7 +397,7 @@ export default function AccessAdmin({
             .select("id, user_id, member_type_id, department");
           if (updError || !data || data.length === 0) {
             setMembers((ms) => ms.map((m) => (m.id === previous.id ? previous : m)));
-            if (updError) return failedWrite("Could not change the type", updError, router);
+            if (updError) return failedWrite("Could not change the type", updError, resync);
             router.refresh();
             return "That change did not apply. Reloading the current state.";
           }
@@ -561,7 +417,7 @@ export default function AccessAdmin({
           .insert({ user_id: userId, member_type_id: typeId, department })
           .select("id, user_id, member_type_id, department")
           .single();
-        if (insError || !data) return failedWrite("Could not assign the type", insError, router);
+        if (insError || !data) return failedWrite("Could not assign the type", insError, resync);
         // Not a bare append: if a resync landed after the insert committed, the
         // snapshot already holds this row and appending would duplicate it —
         // and TypesAdmin counts the raw array, so one holder would render as
@@ -571,7 +427,7 @@ export default function AccessAdmin({
         );
         return null;
       }),
-    [members, router, run],
+    [members, resync, router, run],
   );
 
   /**
@@ -620,7 +476,11 @@ export default function AccessAdmin({
         setNotice(`Password link sent to ${person.email}. If they do not receive it, check the project's SMTP settings — the built-in email service only reaches your Supabase organisation's own members.`);
         return null;
       }),
-    [run],
+    // `setNotice` is a useState setter and therefore stable, but it now arrives
+    // through a custom hook, where the lint rule cannot see that. Listing it is
+    // free — the identity never changes, so this callback is no more volatile
+    // than it was when the setter was declared in this file.
+    [run, setNotice],
   );
 
   /** Create a custom (non-system) type. */
@@ -713,7 +573,24 @@ export default function AccessAdmin({
   return (
     <>
       <TopBar parent="Admin" current="Access">
-        <ViewSwitch value={view} onChange={setView} />
+        <ViewSwitch
+          value={view}
+          label="Access view"
+          onChange={setView}
+          options={[
+            { value: "person", label: "By person" },
+            { value: "matrix", label: "Matrix" },
+            // Third segment, beyond the design's two. The handoff predates user
+            // types; with types, "what can this TYPE see" is a question neither
+            // person-shaped view can answer, and putting it anywhere else would
+            // split access administration across two places.
+            { value: "types", label: "Types" },
+            // Fourth segment. The audit log answers "who changed what, and
+            // when", which is a question about the other three views rather
+            // than a fourth way of editing access — read-only by construction.
+            { value: "audit", label: "Audit" },
+          ]}
+        />
         <Tooltip title={INVITE_REASON}>
           <Box component="span" sx={{ display: "inline-flex" }}>
             {/* aria-disabled, not `disabled` — a disabled button leaves the tab

@@ -102,6 +102,25 @@ const ALLOWED = new Map<string, ReadonlyArray<string>>([
   // silently covers a real hit later, so it is gone — do not restore it without
   // a hit to point at.
   ["MAINTAINING.md", ["an upstream-only path"]],
+  // The Stream B specification, committed so the next maintainer of the Catalog
+  // admin can read what was asked for. It names the originating organisation
+  // ONCE, in a sentence describing where a stamped repository's starting code
+  // comes from — a fact that is true, already public (this repository is public
+  // and lives under that organisation), and unavoidable in a document whose
+  // subject is the template pipeline itself.
+  //
+  // SCOPED TO THAT ONE LABEL DELIBERATELY. This file is not exempt from the
+  // credential patterns, the infrastructure identifiers, or anything else: if a
+  // future revision of the spec carries a JWT or a project ref, this suite still
+  // fails on it. Nothing else in the repository is exempt from the organisation
+  // pattern either — this is the only entry, and it should stay the only one.
+  //
+  // It is a maintainer document in the same class as MAINTAINING.md: a stamped
+  // client can delete it, and its own header says so.
+  [
+    "docs/buildkit-walkthrough-2-revisions-2026-08-18.md",
+    ["originating organisation"],
+  ],
 ]);
 
 test("no tracked file leaks the originating organisation, its infrastructure, or a credential", () => {

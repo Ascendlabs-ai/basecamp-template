@@ -60,11 +60,12 @@ Full provisioning instructions, including the first-administrator step, are in
 1. Create a Supabase project.
 2. **Expose the `basecamp` schema to the Data API** (Project Settings → API →
    Exposed schemas). Nothing works before this and the failure is opaque.
-3. Apply `supabase/migrations/0001_baseline.sql`, then `0002_security_boundary.sql`.
+3. Apply `supabase/migrations/0001_baseline.sql`, then `0002_security_boundary.sql`,
+   then optionally `0003_seed_categories.sql` for four starter categories.
 4. Create your administrator account, then insert their trust-root row.
 5. `cp .env.local.example .env.local` and fill in the two values.
 6. `npm install && npm run dev`, sign in, confirm `/admin/access` renders.
-7. Build your catalog.
+7. Build your catalog in **Admin → Catalog**.
 
 ## Rebranding
 
@@ -142,9 +143,12 @@ environment variables and no other configuration.
 
 ## What is deliberately not here
 
-- **No seed data.** The catalog starts empty; the schema is the deliverable.
-  `supabase/seed.example.sql` is a worked example you can run and then delete —
-  it is not applied for you.
+- **Almost no seed data.** `0003_seed_categories.sql` adds four empty starter
+  categories — Sales, Marketing, Operations, Useful Tools — so a new app has
+  somewhere to put its first entry. It is optional and you can skip it. No
+  entries are seeded; the schema is still the deliverable.
+  `supabase/seed.example.sql` is a separate, fuller worked example you can run
+  and then delete — it is not applied for you.
 - **No signup screen — which is not the same as signup being off.** This app
   ships no way to register through it, and the sign-in page says accounts are
   issued by an administrator. That is true of the app; it is *not* true of the

@@ -1,11 +1,13 @@
 import { redirect } from "next/navigation";
 
 import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
+import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import KeyOutlinedIcon from "@mui/icons-material/KeyOutlined";
 import SearchOffRoundedIcon from "@mui/icons-material/SearchOffRounded";
 import Alert from "@mui/material/Alert";
 import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
@@ -13,6 +15,8 @@ import Typography from "@mui/material/Typography";
 import CatalogView from "@/components/catalog/CatalogView";
 import TopBar from "@/components/shell/TopBar";
 import { filterCatalog, visibleCategories } from "@/lib/catalog";
+import { explainReadError } from "@/lib/postgrestMessage";
+import { isSuperAdmin } from "@/lib/isSuperAdmin";
 import { createClient } from "@/lib/supabase/server";
 import { ENTRY_COLUMNS, type CatalogCategory } from "@/types/catalog";
 import { APP_NAME, CATALOG_HEADING } from "@/lib/brand";
@@ -50,7 +54,7 @@ export default async function HomePage({
   // on the catalog select, and this is the app's hottest page — the admin
   // screen already learned this lesson, and a fix written in the same commit
   // reintroduced the serial await here.
-  const [{ data, error, count }, entryCountRes] = await Promise.all([
+  const [{ data, error, count }, entryCountRes, role] = await Promise.all([
     supabase
       .from("categories")
       .select(`id, slug, name, description, sort_order, entries(${ENTRY_COLUMNS})`, {
@@ -65,6 +69,12 @@ export default async function HomePage({
       .order("sort_order", { ascending: true, referencedTable: "entries" })
       .order("slug", { ascending: true, referencedTable: "entries" }),
     supabase.from("entries").select("id", { count: "exact", head: true }),
+    // For the EMPTY STATE only — never for what is shown. A super_admin's
+    // catalog is already unfiltered by the SELECT policies, so this cannot
+    // change which rows appear; it changes which of two sentences is printed
+    // when there are none. Deduplicated against the layout's identical question,
+    // so it costs no extra round trip.
+    isSuperAdmin(),
   ]);
 
   // Truncation is silent in the response and detectable only by count.
@@ -100,6 +110,7 @@ export default async function HomePage({
     // Full detail server-side only. This is the half of the fix that matters:
     // suppressing the message on the page is useless if it is nowhere at all.
     console.error("[basecamp] catalog query failed:", error.code, error.message, error.details);
+    const explained = explainReadError(error);
     return (
       <>
         <TopBar current="Home" />
@@ -112,9 +123,22 @@ export default async function HomePage({
                 not be handed schema internals. The bare code is kept because
                 it is what lets an operator tell 42501 (grants) from PGRST106
                 (not exposed) from PGRST301 (bad JWT) without a log dive. */}
-            <Typography variant="body2" sx={{ fontFamily: "ui-monospace, monospace" }}>
-              {error.code ? `Error ${error.code}` : "Unknown error"}
-            </Typography>
+            {/* One code — PGRST106 — is spelled out, because it is the one a
+                brand-new install hits on its very first load and the one a bare
+                code helps least with: the schema is simply not being served to
+                the Data API yet. It is safe to name because it is not
+                user-specific; when it fires, nobody can read anything, so the
+                message discloses nothing about this viewer. Everything else
+                keeps the bare code deliberately — see lib/postgrestMessage.ts. */}
+            {explained ? (
+              <Typography variant="body2" sx={{ lineHeight: 1.7 }}>
+                {explained}
+              </Typography>
+            ) : (
+              <Typography variant="body2" sx={{ fontFamily: "ui-monospace, monospace" }}>
+                {error.code ? `Error ${error.code}` : "Unknown error"}
+              </Typography>
+            )}
           </Alert>
         </Box>
       </>
@@ -122,6 +146,10 @@ export default async function HomePage({
   }
 
   const categories = (data ?? []) as CatalogCategory[];
+
+  // Fails CLOSED: an unreadable role answer falls back to the no-grants message,
+  // which discloses nothing. `isSuperAdmin` logs it, so it is not silent.
+  const viewerIsSuperAdmin = role.value;
 
   // Shaping lives in lib/ so it can be tested against the real payload — see
   // src/lib/catalog.test.ts. A category with no visible entries must not render
@@ -142,7 +170,75 @@ export default async function HomePage({
       </TopBar>
 
       <Box component="main" id="main-content" tabIndex={-1} sx={{ px: { xs: 2, md: 4 }, py: { xs: 3, md: 3.25 }, flex: 1 }}>
-        {visible.length === 0 ? (
+        {visible.length === 0 && viewerIsSuperAdmin ? (
+          /*
+            SUCCESS MUST NOT RENDER AS FAILURE.
+
+            A brand-new administrator, having provisioned the database correctly
+            and signed in for the first time, used to be told "You do not have
+            access to anything here" — at the finish line of the guided setup,
+            on an app that was working perfectly. Nothing was wrong: the catalog
+            was simply empty, because until recently there was no screen that
+            could fill it.
+
+            The two states are genuinely different and only the viewer's role
+            tells them apart. A super_admin reads every row of `categories` and
+            `entries` by policy, so an empty result for them means the tables
+            ARE empty and the fix is theirs to make — hence a route to it. For
+            anyone else an empty result means "nothing has been granted to you",
+            which is the message below and stays exactly as it was.
+          */
+          <Paper
+            elevation={0}
+            sx={{
+              maxWidth: 560,
+              mx: "auto",
+              mt: { xs: 4, md: 10 },
+              p: { xs: 3, sm: 5 },
+              textAlign: "center",
+              border: 1,
+              borderColor: "divider",
+            }}
+          >
+            <Box
+              aria-hidden
+              sx={{
+                display: "inline-flex",
+                p: 1.75,
+                mb: 2,
+                borderRadius: "50%",
+                backgroundColor: "celestial.light",
+                color: "primary.dark",
+              }}
+            >
+              <Inventory2OutlinedIcon sx={{ fontSize: 30 }} />
+            </Box>
+            <Typography variant="h5" component="h1" sx={{ fontWeight: 700, mb: 1 }}>
+              Your catalog is empty
+            </Typography>
+            <Typography variant="body2" sx={{ color: "text.secondary", lineHeight: 1.7, mb: 3 }}>
+              Everything is working — there is just nothing in it yet. Add your
+              first app in Admin → Catalog and it appears here straight away.
+            </Typography>
+            {/*
+              A plain `href`, NOT `component={NextLink}`. This file is a Server
+              Component and MUI's Button is a Client Component, so passing the
+              Link COMPONENT across that boundary is passing a function to the
+              client — React refuses it at render time with "Functions cannot be
+              passed directly to Client Components". It builds and typechecks
+              cleanly and then throws on the running page, which is how it got
+              here: only loading the route catches it.
+
+              MUI renders an anchor when it is given an href, so this costs a
+              full page load instead of a client-side transition — an acceptable
+              price on a once-per-app empty state, and the alternative is
+              extracting this panel into a client component for one button.
+            */}
+            <Button href="/admin/catalog" variant="contained" sx={{ cursor: "pointer" }}>
+              Go to Admin → Catalog
+            </Button>
+          </Paper>
+        ) : visible.length === 0 ? (
           <Paper
             elevation={0}
             sx={{

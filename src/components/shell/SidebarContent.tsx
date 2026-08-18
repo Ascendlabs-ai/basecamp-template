@@ -4,6 +4,7 @@ import NextLink from "next/link";
 import { usePathname } from "next/navigation";
 
 import HomeRoundedIcon from "@mui/icons-material/HomeRounded";
+import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import LaunchRoundedIcon from "@mui/icons-material/LaunchRounded";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
 import SettingsRoundedIcon from "@mui/icons-material/SettingsRounded";
@@ -246,17 +247,38 @@ export default function SidebarContent({
         {canAdmin ? (
           <Box component="nav" aria-label="Administration">
             {/*
-        DEVIATION: the handoff gives Admin a sub-nav — Access, App registry,
-        Audit log. Only Access exists; the other two are undesigned and
-        unbuilt, so a disclosure container wrapping a single item would be
-        chrome around nothing. Flat row until a second admin screen lands.
-        A deliberate design choice, kept on rebrand.
+        The handoff gives Admin a sub-nav — Access, App registry, Audit log.
+        This was a single flat "Admin" row for as long as Access was the only
+        screen that existed, on the stated grounds that a disclosure container
+        wrapping one item is chrome around nothing, and that it would become a
+        sub-nav "until a second admin screen lands".
+
+        Catalog is that second screen, so this is now the sub-nav its own
+        deviation note promised. Both rows are listed rather than one being
+        reachable only from inside the other: an unlinked screen is a screen
+        nobody finds, and the whole reason the catalog could never be filled in
+        was that its route did not exist to be linked to.
+
+        The Audit log is deliberately still absent — it is a TAB inside Access
+        rather than a route of its own, so listing it here would be a link to
+        somewhere that is not a page.
       */}
+            <GroupLabel>Admin</GroupLabel>
+            <NavItem
+              href="/admin/catalog"
+              icon={Inventory2OutlinedIcon}
+              label="Catalog"
+              // Per-route, not the shared "/admin" prefix: with two admin rows a
+              // test on "/admin" alone would light both at once and the sidebar
+              // would stop saying where you are.
+              active={pathname.startsWith("/admin/catalog")}
+              onNavigate={onNavigate}
+            />
             <NavItem
               href="/admin/access"
               icon={SettingsRoundedIcon}
-              label="Admin"
-              active={onAdmin}
+              label="Access"
+              active={pathname.startsWith("/admin/access")}
               onNavigate={onNavigate}
             />
           </Box>

@@ -4,7 +4,7 @@ import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 
 /**
- * The design's pill segmented control, extended: By person | Matrix | Types.
+ * The design's pill segmented control.
  *
  * MUI's ToggleButtonGroup rather than two styled Boxes, because it already
  * carries the roles, arrow-key roving focus and pressed state this pattern
@@ -13,29 +13,39 @@ import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
  *
  * The active segment uses `text.primary` fill with `background.paper` ink
  * (design: #1D1D20 / #fff), which is the same near-black the sidebar uses.
+ *
+ * GENERIC OVER ITS SEGMENTS, because a second admin screen (Catalog) now needs
+ * the same control over a different set. The alternative was a second copy of
+ * the `sx` block below, which is the shape that drifts: the next person to fix
+ * the focus ring or the AA contrast on the active segment fixes it on one
+ * screen. The segment list and the accessible name are the only things the two
+ * callers disagree about, so they are the only things passed in.
  */
-/** The design's two segments, plus Types and the append-only access Audit. */
-export type AdminView = "person" | "matrix" | "types" | "audit";
-
-export default function ViewSwitch({
+export default function ViewSwitch<T extends string>({
   value,
+  options,
+  label,
   onChange,
 }: {
-  value: AdminView;
-  onChange: (next: AdminView) => void;
+  value: T;
+  /** Rendered left to right, in this order. */
+  options: ReadonlyArray<{ value: T; label: string }>;
+  /** The group's accessible name, e.g. "Access view". */
+  label: string;
+  onChange: (next: T) => void;
 }) {
   return (
     <ToggleButtonGroup
       exclusive
       size="small"
       value={value}
-      aria-label="Access view"
+      aria-label={label}
       onChange={(_, next) => {
         // null when the active segment is clicked again — a segmented control
         // has no "off", so ignore it rather than dropping to an unset view.
-        if (next === "person" || next === "matrix" || next === "types" || next === "audit") {
-          onChange(next);
-        }
+        // Checked against the OPTIONS rather than a hardcoded union, so this
+        // stays correct for any caller's segment set.
+        if (options.some((o) => o.value === next)) onChange(next as T);
       }}
       sx={(theme) => ({
         backgroundColor: theme.palette.action.hover,
@@ -68,17 +78,11 @@ export default function ViewSwitch({
         },
       })}
     >
-      <ToggleButton value="person">By person</ToggleButton>
-      <ToggleButton value="matrix">Matrix</ToggleButton>
-      {/* Third segment, beyond the design's two. The handoff predates user
-          types; with types, "what can this TYPE see" is a question neither
-          person-shaped view can answer, and putting it anywhere else would
-          split access administration across two places. */}
-      <ToggleButton value="types">Types</ToggleButton>
-      {/* Fourth segment. The audit log answers "who changed what, and when",
-          which is a question about the other three views rather than a fourth
-          way of editing access — it is read-only by construction. */}
-      <ToggleButton value="audit">Audit</ToggleButton>
+      {options.map((option) => (
+        <ToggleButton key={option.value} value={option.value}>
+          {option.label}
+        </ToggleButton>
+      ))}
     </ToggleButtonGroup>
   );
 }
