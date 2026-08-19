@@ -36,9 +36,17 @@ type CodedError = { code?: string; message?: string } | null | undefined;
  * Kept as a constant because `supabase/README.md` step 0 gives the same path and
  * the two must not drift — a client following a message to a menu that is not
  * there is worse off than one following a code to a search engine.
+ *
+ * BOTH LOCATIONS, CURRENT ONE FIRST. Supabase moved this setting: it is under
+ * Integrations → Data API → Settings on a project provisioned recently, and was
+ * under Project Settings → API before that. Older projects can still show the
+ * old place, so naming only one strands half the readers — and this string is
+ * read by someone whose app is already refusing every request, which is the
+ * worst moment to send them hunting a menu that is not there.
  */
 export const EXPOSED_SCHEMAS_LOCATION =
-  "Supabase Dashboard → Project Settings → API → Exposed schemas";
+  "Supabase Dashboard → Integrations → Data API → Settings → Exposed schemas " +
+  "(on older projects: Project Settings → API → Exposed schemas)";
 
 /**
  * A sentence for a read failure, or `null` to leave the caller's bare-code

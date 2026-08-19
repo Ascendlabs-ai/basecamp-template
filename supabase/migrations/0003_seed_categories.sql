@@ -78,10 +78,19 @@ on conflict (slug) do nothing;
 --   so an ordinary team member sees NONE of these four until entries exist and
 --   they have been granted something inside one.
 --
--- A super_admin sees all four immediately, because the SELECT policy on
+-- A super_admin READS all four immediately, because the SELECT policy on
 -- `categories` short-circuits on `is_super_admin()` before it ever consults
--- `category_has_grant`. That is what makes the first administrator's Catalog
--- screen usable on a brand-new install, and it is the state the guided
--- walkthrough's "rename a category" step is written against.
+-- `category_has_grant`. That is what makes **Admin → Catalog** usable on a
+-- brand-new install: it queries `categories` directly and lists all four with
+-- their entry counts, which is where the guided walkthrough's "rename a
+-- category" step happens.
+--
+-- READ IS NOT SHOWN, and an earlier version of this comment stopped one step
+-- short. The HOME screen renders none of them, for a super_admin as much as for
+-- anyone: `src/lib/catalog.ts` drops every category with no entries —
+-- `filter((c) => (c.entries?.length ?? 0) > 0)` — and that function receives
+-- rows and nothing else, so it has no viewer to make an exception for. A fresh
+-- administrator's first home screen is the "Your catalog is empty" panel
+-- whether or not this file ran. Put an entry in a category and it appears.
 
 commit;

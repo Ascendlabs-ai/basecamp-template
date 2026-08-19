@@ -58,8 +58,9 @@ Full provisioning instructions, including the first-administrator step, are in
 [`supabase/README.md`](supabase/README.md). In short:
 
 1. Create a Supabase project.
-2. **Expose the `basecamp` schema to the Data API** (Project Settings → API →
-   Exposed schemas). Nothing works before this and the failure is opaque.
+2. **Expose the `basecamp` schema to the Data API** (Integrations → Data API →
+   Settings → Exposed schemas; older projects have it under Project Settings →
+   API). Nothing works before this and the failure is opaque.
 3. Apply `supabase/migrations/0001_baseline.sql`, then `0002_security_boundary.sql`,
    then optionally `0003_seed_categories.sql` for four starter categories.
 4. Create your administrator account, then insert their trust-root row.

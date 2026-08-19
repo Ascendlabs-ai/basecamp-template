@@ -59,7 +59,8 @@ a dashboard, verify a domain, approve an account. These get lost constantly, so 
 moment they come up.
 
 - [ ] **Expose the `basecamp` schema to the Data API — do this first.** Supabase Dashboard →
-      Project Settings → API → Exposed schemas. **Add** `basecamp` alongside whatever is already
+      Integrations → Data API → Settings → Exposed schemas (older projects have it under
+      Project Settings → API). **Add** `basecamp` alongside whatever is already
       listed; the field is replaced wholesale when you edit it, so don't remove an existing entry.
       Skip this and every request fails with `PGRST106`, the app shows an error, and nothing in the
       database looks wrong — it is a genuinely hard failure to diagnose.

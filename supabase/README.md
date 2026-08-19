@@ -31,7 +31,8 @@ build and lock the schema are unchanged.
 
 ### 0. Expose the `basecamp` schema to the Data API — do this first
 
-Supabase Dashboard → **Project Settings → API → Exposed schemas**. Add
+Supabase Dashboard → **Integrations → Data API → Settings → Exposed schemas**
+(on older projects this setting is under **Project Settings → API**). Add
 `basecamp` alongside whatever is already listed.
 
 This is a project setting, not schema DDL, so `pg_dump` cannot carry it and no
@@ -262,10 +263,28 @@ categories and nothing else.
 
 Note that you see the catalog only because you are a super_admin. A colleague
 with no grants sees nothing until you grant them something in `/admin/access` —
-that is the access model working. One consequence worth knowing: an **empty**
-category is invisible to everyone but an administrator, by design, so the four
-categories `0003` seeds show up for you and for nobody else until they contain
-something.
+that is the access model working.
+
+**One consequence, and it is not the one an earlier version of this file
+described.** An empty category renders nowhere on the home screen — **including
+for you**. `src/lib/catalog.ts` drops every category holding no entries:
+
+```ts
+const visible = (rows ?? []).filter((c) => (c.entries?.length ?? 0) > 0);
+```
+
+That function takes rows and nothing else — it has no viewer, no role, and so
+no way to make an exception for an administrator. The database half is the
+opposite and is often mistaken for the whole story: `basecamp_categories_select_granted`
+is `is_super_admin() OR category_has_grant(id)`, so a super_admin genuinely
+*reads* all four seeded rows. The app then filters them out before rendering.
+Readable and not shown are different things.
+
+So on a brand-new install, seeded or not, **your first home screen is the "Your
+catalog is empty" panel**, which is correct and is what that panel exists to
+say. The four categories are real and are waiting in **Admin → Catalog**, which
+queries them directly and shows each with its entry count. Put one entry in a
+category and it appears on the home screen.
 
 ---
 
