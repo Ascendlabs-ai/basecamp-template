@@ -317,12 +317,13 @@ test("the baseline grants no privilege that predates the oldest supported Postgr
 /**
  * A definer TRIGGER function must never be executable by `authenticated`.
  *
- * This is not tidiness. It was proven end to end: a role holding `authenticated`
- * plus CREATE on any schema creates its own table named `type_grants`, attaches
- * `basecamp.log_access_change()` to it, and has forged rows written into the
- * append-only audit log AS `postgres` — while a direct INSERT from the same
- * session is refused. `CREATE TRIGGER` exercises EXECUTE, and that privilege
- * check is the only thing in the way.
+ * This is not tidiness. It was proven end to end: holding EXECUTE on one of
+ * these was enough for an ordinary signed-in role to get that function to run
+ * with its owner's rights and write rows into the append-only audit log AS
+ * `postgres` — while a direct INSERT from the same session is refused.
+ * `CREATE TRIGGER` exercises EXECUTE, and that privilege check is the only
+ * thing in the way. The steps are deliberately not written out: this repository
+ * is public, and the technique is not specific to it.
  *
  * Nothing legitimate needs the grant: PostgreSQL refuses to call a trigger
  * function directly, and the trigger machinery does not consult EXECUTE.

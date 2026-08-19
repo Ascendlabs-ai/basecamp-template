@@ -97,14 +97,15 @@ each of the following was checked and held on your database:
   nothing else, its mutation and TRUNCATE guards are enabled, and all four audit
   writers are attached to the tables they are supposed to watch;
 - **no definer TRIGGER function is executable by anyone but its owner.** This is
-  the one that reads like housekeeping and is not. A role holding
-  `authenticated` plus CREATE on any schema can create its own table named
-  `type_grants`, attach `basecamp.log_access_change()` to it, and have forged
-  rows written into the append-only audit log *as `postgres`* — while a direct
-  INSERT from the same session is refused. `CREATE TRIGGER` exercises EXECUTE,
-  and that privilege check is the only thing in the way. Nothing legitimate
+  the one that reads like housekeeping and is not: holding EXECUTE on one of
+  them is enough for an ordinary signed-in role to get that function to run with
+  its owner's rights and write rows into the append-only audit log *as
+  `postgres`* — while a direct INSERT from the same session is refused.
+  `CREATE TRIGGER` exercises EXECUTE, and that privilege check is the only thing
+  in the way. Nothing legitimate
   needs the grant: PostgreSQL refuses to call a trigger function directly, and
-  the trigger machinery never consults EXECUTE;
+  the trigger machinery never consults EXECUTE. **Do not re-grant it to get
+  something working;**
 - **the six functions that decide access still decide it** — `is_super_admin`,
   `has_grant`, `category_has_grant`, `can_read_entry`, `can_read_category` and
   `log_access_change` are pinned by md5 of their bodies. Not a substring test: a

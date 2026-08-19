@@ -79,12 +79,13 @@ begin
   -- on the CALLABLE ones.
   --
   -- Granting the six definer TRIGGER functions to `authenticated` was an
-  -- escalation, not a convenience, and it was PROVEN end to end: a role holding
-  -- `authenticated` plus CREATE on any schema could create its own table named
-  -- `type_grants`, attach `basecamp.log_access_change()` to it, and have forged
-  -- rows written into the append-only audit log AS `postgres` — while a direct
-  -- INSERT from the same session is refused. `CREATE TRIGGER` exercises EXECUTE,
-  -- and that privilege check is the only thing standing in the way.
+  -- escalation, not a convenience, and it was PROVEN end to end: holding EXECUTE
+  -- on one of them was enough for an ordinary signed-in role to get that function
+  -- to run with its owner's rights and write rows into the append-only audit log
+  -- AS `postgres` — while a direct INSERT from the same session is refused.
+  -- `CREATE TRIGGER` exercises EXECUTE, and that privilege check is the only
+  -- thing standing in the way. The steps are deliberately not written out here:
+  -- this is a public template, and the technique is not specific to it.
   --
   -- Nothing needs to call a trigger function by name: PostgreSQL refuses direct
   -- invocation ("trigger functions can only be called as triggers"), and the
