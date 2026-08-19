@@ -72,6 +72,87 @@ function findSecret(text) {
   return null;
 }
 
+// ── Command scoping ──────────────────────────────────────────────────────────
+//
+// Every rule below used to match against the WHOLE command string, so a commit
+// MESSAGE was searched for flags, paths and SQL. That denied ordinary work: a
+// commit whose message contained "audit-forgery" was refused as a force-push,
+// because the old `-\w*f` found `-f` inside "-forgery". `git commit -m "test the
+// DROP TABLE guard"` was refused as destructive SQL. The fix is to look only at
+// the part of a command that can actually DO the thing being guarded against.
+//
+// Nothing here relaxes what counts as dangerous — it only stops prose being read
+// as a command.
+
+/**
+ * Individually-executed segments of a compound command (`&&`, `||`, `;`, `|`,
+ * newline). A trailing backslash continues one command across a newline, so
+ * those are joined FIRST — otherwise `git push \` and `--force origin main`
+ * become separate segments and a real force-push reads as an ordinary one.
+ */
+function segments(cmd) {
+  return cmd
+    .replace(/\\\r?\n/g, " ")
+    .split(/\n|&&|\|\||[;|]/g)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Matches the `git push` verb, including `git -c key=val push` and `git --no-pager push`. */
+const PUSH_VERB = /\bgit\s+(?:-c\s+\S+\s+|-\S+\s+)*push\b/;
+
+/**
+ * Blank out the VALUE of `-m` / `--message`, leaving the flag itself in place.
+ * That value is prose a human wrote; reading it as a path or a statement is what
+ * produced most of this hook's false denials. Only the value is removed —
+ * SQL passed to `psql -c "..."` uses a different flag and is left untouched, so
+ * a genuinely destructive command is still caught.
+ */
+function stripMessageValues(text) {
+  return text.replace(
+    /(^|\s)(-m|--message)(\s*=\s*|\s+)("(?:[^"\\]|\\.)*"|'[^']*'|\S+)/g,
+    "$1$2 ",
+  );
+}
+
+/**
+ * The branches a `git push` segment actually writes to.
+ *
+ * Everything after the remote is a refspec, and the destination is the RIGHT
+ * side of `src:dst`. This replaced a scan of the whole command string, which
+ * blamed the wrong branch and said so out loud: `git push --force origin hotfix
+ * && node src/main.js` used to deny with "force-pushing to main" because the
+ * word `main` appeared in a filename.
+ *
+ * Returns [] when no refspec is given (`git push -f origin`), because the target
+ * is then the current branch and this hook cannot know it without running git.
+ * That falls through to the speed bump rather than a deny — same as before.
+ */
+function pushTargets(pushSeg) {
+  // A trailing `# comment` and any message value are prose, not refspecs —
+  // without this, `git push --force origin hotfix  # rebased off main` reports
+  // main again, which is the exact bug this function exists to fix.
+  const clean = stripMessageValues(pushSeg).replace(/\s#[^\n]*/g, "");
+  const toks = clean.split(/\s+/);
+  const at = toks.indexOf("push");
+  if (at === -1) return [];
+  const rest = toks
+    .slice(at + 1)
+    // Shell punctuation and quoting are not part of a branch name: `("main")`
+    // and `main)` from a subshell must still compare equal to `main`.
+    .map((t) => t.replace(/^[("']+|[)"']+$/g, ""))
+    .filter((t) => t && !t.startsWith("-"));
+  // rest[0] is the remote; anything after it is a refspec. With a single token
+  // the two readings are ambiguous (`git push -f main` means the REMOTE named
+  // main), so return it as a candidate rather than assuming the harmless one —
+  // this is a guard, and an over-broad speed bump beats a missed force-push.
+  const specs = rest.length > 1 ? rest.slice(1) : rest;
+  return specs.map((s) => {
+    const dst = s.includes(":") ? s.slice(s.indexOf(":") + 1) : s;
+    return dst.replace(/^\+/, "").replace(/^refs\/heads\//, "");
+  });
+}
+
 // ── Bash command guards ──────────────────────────────────────────────────────
 
 function checkBash(cmd, cfg) {
@@ -111,24 +192,48 @@ function checkBash(cmd, cfg) {
     }
   }
 
-  // Destructive SQL.
-  if (!off("sql") && /\b(DROP\s+(DATABASE|TABLE|SCHEMA)|TRUNCATE\s+TABLE|DELETE\s+FROM\s+\w+\s*;)/i.test(cmd)) {
+  // Destructive SQL. Read with commit-message VALUES removed, so
+  // `git commit -m "add a test for the DROP TABLE guard"` is a sentence rather
+  // than a statement. SQL reaching a database another way — `psql -c "..."`, a
+  // heredoc piped to psql, `-f file.sql` — is untouched and still caught.
+  if (!off("sql") && /\b(DROP\s+(DATABASE|TABLE|SCHEMA)|TRUNCATE\s+TABLE|DELETE\s+FROM\s+\w+\s*;)/i.test(stripMessageValues(cmd))) {
     deny(
       "BLOCKED: this SQL permanently destroys data (DROP / TRUNCATE / unfiltered DELETE) and cannot be undone. " +
         "If this is intentional, run it yourself against a database you have backed up.",
     );
   }
 
-  // Force-push.
-  if (!off("force-push") && /\bgit\s+push\b/.test(cmd) && /(--force\b|--force-with-lease\b|-\w*f)/.test(cmd)) {
-    const branch = cfg.protected_branches.find((b) => new RegExp(`\\b${b}\\b`).test(cmd));
-    if (branch) {
-      deny(
-        `BLOCKED: force-pushing to "${branch}" rewrites shared history and can erase other people's work. ` +
-          "Never force-push a protected branch. Push to a feature branch and open a pull request instead.",
-      );
+  // Force-push. Scoped to the `git push` SEGMENT: a commit message or a file
+  // path in another segment of the same compound command cannot be a push flag.
+  if (!off("force-push")) {
+    const pushSeg = segments(cmd).find((s) => PUSH_VERB.test(s));
+    if (pushSeg) {
+      const after = pushSeg.slice(pushSeg.search(PUSH_VERB));
+      // Whole-token match, so `--follow-tags` and a tag named `v1.0-final` are
+      // no longer read as `-f`. Covers --force, --force-with-lease, --force=x,
+      // -f, and combined short flags such as -uf.
+      const FORCE_FLAG = /(?:^|\s)(?:--force(?:-with-lease)?(?:=\S+)?|-[A-Za-z]*f[A-Za-z]*)(?=\s|$)/;
+      const forced =
+        FORCE_FLAG.test(after) ||
+        // git's OTHER force syntax, which this hook used to miss entirely:
+        // a leading `+` on the refspec, as in `git push origin +main`.
+        /(?:^|\s)\+[^\s:]+(?::\S+)?(?=\s|$)/.test(after) ||
+        // The push is assembled from a variable (`git push $FLAGS origin main`),
+        // so this segment alone cannot say whether it forces. Fall back to the
+        // whole command in that ONE case. Prose does not contain `$`, so this
+        // does not bring back the false denials the scoping just fixed.
+        (/\$/.test(after) && FORCE_FLAG.test(cmd));
+      if (forced) {
+        const branch = pushTargets(after).find((t) => cfg.protected_branches.includes(t));
+        if (branch) {
+          deny(
+            `BLOCKED: force-pushing to "${branch}" rewrites shared history and can erase other people's work. ` +
+              "Never force-push a protected branch. Push to a feature branch and open a pull request instead.",
+          );
+        }
+        ask("Force-push rewrites history on the remote branch. Confirm you know this branch isn't shared before allowing.");
+      }
     }
-    ask("Force-push rewrites history on the remote branch. Confirm you know this branch isn't shared before allowing.");
   }
 
   // Discarding local work.
@@ -136,8 +241,11 @@ function checkBash(cmd, cfg) {
     ask("This throws away uncommitted changes and can't be undone. Confirm you don't need that work before allowing.");
   }
 
-  // Staging/committing a real secrets file.
-  if (!off("env-commit") && /\bgit\s+(add|commit)\b/.test(cmd) && /(^|\s|\/)\.env(\.[\w.-]+)?(\s|$)/.test(cmd) && !/\.env\.example/.test(cmd)) {
+  // Staging/committing a real secrets file. The `.env` has to be an ARGUMENT,
+  // not a word in the message — `git commit -m "document .env.local setup"`
+  // stages nothing and is not a leak. `git add .env` still is.
+  const envScope = stripMessageValues(cmd);
+  if (!off("env-commit") && /\bgit\s+(add|commit)\b/.test(envScope) && /(^|\s|\/)\.env(\.[\w.-]+)?(\s|$)/.test(envScope) && !/\.env\.example/.test(envScope)) {
     deny(
       "BLOCKED: `.env` holds your secret keys and must never be committed to git — once pushed, treat those keys as leaked. " +
         "Add `.env` to `.gitignore` instead. Commit `.env.example` (with placeholder values) if you want to document what keys are needed.",
