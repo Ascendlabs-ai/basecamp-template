@@ -107,13 +107,16 @@ each of the following was checked and held on your database:
   needs the grant: PostgreSQL refuses to call a trigger function directly, and
   the trigger machinery never consults EXECUTE. **Do not re-grant it to get
   something working;**
-- **the six functions that decide access still decide it** — `is_super_admin`,
-  `has_grant`, `category_has_grant`, `can_read_entry`, `can_read_category` and
-  `log_access_change` are pinned by md5 of their bodies. Not a substring test: a
-  body of `select true` followed by a comment naming the right tables satisfies
-  every substring check and makes every caller an administrator. These six ship
-  identically to every stamp of this template, so an exact pin is right for them
-  — see below for what happens when you change one on purpose;
+- **the seven functions that decide access still decide it** — `is_super_admin`,
+  `has_grant`, `category_has_grant`, `can_read_entry`, `can_read_category`,
+  `log_access_change` and `list_people` are pinned by md5 of their bodies. Not a
+  substring test: a body of `select true` followed by a comment naming the right
+  tables satisfies every substring check and makes every caller an administrator.
+  `list_people` is on the list because it is the one that returns other people's
+  email addresses, and a body keeping `from auth.users` while dropping only its
+  admin check passes every weaker test there is. These seven ship identically to
+  every stamp of this template, so an exact pin is right for them — see below for
+  what happens when you change one on purpose;
 - **every policy consults the access model**, and the obvious permit-alls are
   refused. This one is a floor rather than an
   equality, and it is the weakest check in the file in **both** directions: it
@@ -148,11 +151,15 @@ because a file which fails on everything proves nothing either. You do not need
 it to provision; run it if you edit `0002`, or if you want the proof. Its header
 says how to start a scratch cluster.
 
-Six of those cases expect `0002` to **commit**, so you will see six
+Nine of those cases expect `0002` to **commit**, so you will see nine
 `PASS [COMMITTED]` lines and that is correct, not a failure. Five are mutations
 `0002` *repairs*: it assigns ownership and EXECUTE before it asserts, which is
-what makes a fresh install self-correcting. The sixth adds a policy that still
-consults the access model, which is a legitimate extension rather than an error.
+what makes a fresh install self-correcting. One adds a policy that still
+consults the access model, a legitimate extension rather than an error. One adds
+a definer function in `public` that never names `basecamp`, which is nothing to
+do with this schema. The last two are controls on an unbroken schema — one
+applied with `psql`, one pasted CRLF the way the SQL Editor delivers it — and
+both must commit, because a file that refused everything would prove nothing.
 
 **What a green run does not mean.** 73/73 says `0002` catches those 72
 mutations — refusing 66, repairing 5 before it looks, and correctly ignoring 1.
@@ -162,15 +169,26 @@ file, each proven on live PostgreSQL 16 and 17 — so read
 this list. None is reachable by an ordinary signed-in user of your app, and a
 service-role API key does not reach them either.
 
-If you deliberately change one of the six pinned function bodies, `0002` will
+If you deliberately change one of the seven pinned function bodies, `0002` will
 refuse until you re-derive its digest — which is the point, because it forces
 someone to read the new body first:
 
 ```sql
-select proname, md5(prosrc) from pg_proc p
+select proname,
+       md5(replace(replace(prosrc, chr(13)||chr(10), chr(10)), chr(13), chr(10)))
+  from pg_proc p
   join pg_namespace n on n.oid = p.pronamespace
  where n.nspname = 'basecamp' and proname = '<fn>';
 ```
+
+Run that in the Supabase SQL Editor, against the project you changed the body in.
+The `replace(...)` pair is not decoration and must not be dropped: `0002` hashes
+the same normalized text, because pasting the migrations from a clipboard or a
+checkout that carries CRLF stores carriage returns in the body that the
+template's own file does not have. Re-deriving a digest from raw `prosrc` on such
+a database bakes that one machine's line endings into the pin, and the template
+then refuses every clean install afterwards — including yours, on the next
+project you stamp.
 
 ### 1b. Set the Auth URL configuration
 

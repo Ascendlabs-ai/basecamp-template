@@ -114,13 +114,14 @@ enforcement lives. What you get instead is `0002_security_boundary.sql`, which
 asserts the boundary at apply time and refuses to commit if ownership, RLS,
 definer hardening, the trust root's privileges and guards, the audit table's
 append-only guards and writers, the schema's default privileges, view safety,
-the ACLs on the definer trigger functions, the bodies of the six functions that
+the ACLs on the definer trigger functions, the bodies of the seven functions that
 decide access, or the policies that call them are wrong.
 
 Those assertions are mutation-tested, and **the test is in the box**:
 `supabase/tests/boundary_mutations.sh` breaks one thing at a time in a throwaway
 PostgreSQL 16 or 17 cluster and requires `0002` to refuse — 72 mutations plus a
-control that must commit. Six cases expect a COMMIT and say so. Nothing about
+control that must commit, plus an Editor-path arm that pastes both files CRLF the way a
+client does. Nine cases expect a COMMIT and say so. Nothing about
 provisioning needs it; run it if you edit `0002`, or if you would rather see the
 proof than read about it.
 

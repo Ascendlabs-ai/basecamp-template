@@ -19,12 +19,20 @@
 # not contain. They are enumerated in issues.md under "Known gaps in the security
 # boundary". Read that before treating a green run as a clean bill of health.
 #
+# TWO TRANSPORTS, AND THE SECOND ONE IS THE CLIENT'S. Parts 1-11 apply the
+# files with `psql -f` on LF endings. Part 12 applies the same two files the way
+# a client does — pasted, CRLF, whole-file — because a green psql run said
+# nothing about that route and a client's provision died on it. Keep both. The
+# totals are printed per transport for the same reason.
+#
 # YOU DO NOT NEED THIS FILE TO USE THE TEMPLATE. It proves the boundary is
 # enforced; provisioning only needs the two files in `supabase/migrations/`. Run
 # it if you edit `0002`, or if you want the proof for yourself rather than on
 # trust.
 #
-# REQUIREMENTS. A throwaway PostgreSQL 16 or 17 cluster you do not care about.
+# REQUIREMENTS. A throwaway PostgreSQL 16 or 17 cluster you do not care about,
+# plus `perl` on PATH — PART 12 uses it to build the CRLF fixtures, and the
+# preflight stops the run if it is missing.
 # NEVER point this at production — it drops and recreates databases.
 #
 #   export LC_ALL=C
@@ -54,6 +62,9 @@ TPL="$REPO/supabase/migrations/0002_security_boundary.sql"
 # other's database mid-case. That happened during review — one run reported
 # 11 passed, 62 failed, and only the setup checks below made it visible rather
 # than silently green.
+# Lower case only. `create database FooBar` folds to `foobar` while `-d FooBar`
+# does not, so an upper-case override makes every case die at `setup failed
+# [stub]` with nothing pointing at the name.
 DB="${BC_DB:-mut_$$}"
 
 BASE="psql -h $SOCK -p $PORT -U postgres -X -q -v ON_ERROR_STOP=1"
@@ -167,6 +178,61 @@ if ! $BASE -c "select 1" >/dev/null 2>&1; then
   echo "no PostgreSQL at $SOCK:$PORT — start a throwaway cluster (see the header) or set BC_SOCK/BC_PORT" >&2
   exit 2
 fi
+
+# PART 12's fixtures, built and checked HERE rather than at PART 12 itself.
+# Everything below `exit 2`s, and by PART 12 the psql arm has already run 96
+# cases and printed them — exiting there would throw that away and never reach
+# the TOTAL line. A dependency problem should stop the run before it starts.
+command -v perl >/dev/null 2>&1 || {
+  echo "perl is required to build the Editor-path fixtures (PART 12)" >&2; exit 2; }
+EDIR="$(mktemp -d "${TMPDIR:-/tmp}/bc-editor.XXXXXX")"
+trap 'rm -rf "$EDIR"' EXIT
+perl -pe 's/\n/\r\n/' "$REPO/supabase/migrations/0001_baseline.sql" > "$EDIR/0001.crlf.sql"
+perl -pe 's/\n/\r\n/' "$TPL"                                       > "$EDIR/0002.crlf.sql"
+# Each file is passed as ONE `-c` argument, so it must fit in one. Two different
+# limits apply and the smaller one is not the famous one: Linux caps a SINGLE
+# argument at MAX_ARG_STRLEN, a fixed 128 KiB, independent of the much larger
+# ARG_MAX that governs the whole vector. macOS has no per-argument cap, so a
+# file that is fine on the maintainer's laptop can fail with E2BIG on the Linux
+# throwaway cluster the header sends people to. 0001 is a pg_dump of a schema
+# clients are told to extend, so this is a live ceiling, not a formality — and
+# without the check every case reports "setup failed [0001 via editor path]",
+# which sends the reader hunting a boundary regression that is not there.
+# The cap is MAX_ARG_STRLEN (a fixed 128 KiB on Linux), or ARG_MAX where that is
+# somehow smaller, less room for the rest of the command line. Deriving it from
+# ARG_MAX alone was wrong in both directions: a fraction of it is unrelated to
+# the real per-argument limit, and on a host reporting ARG_MAX=131072 a quarter
+# of it would refuse a setup that works fine.
+EDITOR_ARM_BLOCKED=""
+lim=131072
+[ "$(getconf ARG_MAX)" -lt "$lim" ] && lim=$(getconf ARG_MAX)
+lim=$(( lim - 4096 ))
+for f in "$EDIR/0001.crlf.sql" "$EDIR/0002.crlf.sql"; do
+  sz=$(wc -c < "$f")
+  if [ "$sz" -gt "$lim" ]; then
+    # NOT `exit 2`. This is PART 12's problem alone, and exiting here would throw
+    # away 96 psql cases that were about to run and report perfectly well.
+    # Appended, not assigned: with both fixtures over the limit, overwriting would
+    # name only the second and send the reader after half the problem. `$((sz))`
+    # strips the padding macOS `wc -c` adds.
+    EDITOR_ARM_BLOCKED="${EDITOR_ARM_BLOCKED:+$EDITOR_ARM_BLOCKED; }$f is $((sz)) bytes, over the $lim byte limit for one -c argument"
+  fi
+done
+# The CRLF-ing must have actually happened. `perl` exiting 0 says nothing: a
+# perl that did nothing would leave the arm testing the LF path a second time
+# and reporting seven green cases for a route it never touched — the exact
+# failure mode PART 12 exists to end, so it is asserted, not assumed.
+#
+# The threshold is a floor, not a count: 0001 is 1735 lines and 0002 is 968, so
+# a CR count under 100 means the conversion did not happen rather than that it
+# half-happened. An exact count would have to be maintained against the files and
+# would fail on every edit.
+for f in "$EDIR/0001.crlf.sql" "$EDIR/0002.crlf.sql"; do
+  if [ "$(LC_ALL=C tr -cd '\r' < "$f" | wc -c)" -lt 100 ]; then
+    echo "editor arm: $f has no carriage returns — the CRLF fixture was not built" >&2
+    exit 2
+  fi
+done
 
 echo "### target: supabase/migrations/0002_security_boundary.sql"
 echo
@@ -382,12 +448,186 @@ run_case "definer reaching basecamp through a 3-hop chain" REFUSED "create funct
 # resolved it as postgres. The owner filter is gone.
 run_case "security_invoker view re-owned to an unprivileged role" REFUSED "do \$\$ begin if not exists (select 1 from pg_roles where rolname='zmal2') then create role zmal2 nologin; end if; end \$\$; create view public.iv3 with (security_invoker = true) as select * from basecamp.entries; alter view public.iv3 owner to zmal2; grant select on public.iv3 to postgres; create function public.tiles3() returns table(display_name text) language sql stable security definer set search_path='' as \$x\$ select v.display_name from public.iv3 v \$x\$; grant execute on function public.tiles3() to authenticated;"
 
+# ============================================================================
+# PART 12: THE EDITOR PATH. Everything above this line reached the database
+# through `psql -f` on files with LF endings — the maintainer's route, not the
+# client's. A client pastes these two files into the Supabase SQL Editor, and
+# 96/96 on the psql route said nothing whatsoever about that. It could not: on
+# 2026-08-19 a client ran 0001 clean in the Editor and 0002 refused on the
+# `is_super_admin` digest, with this suite green on that same commit.
+#
+# WHAT THIS ARM REPRODUCES, and it is two things, both of which matter:
+#   1. CRLF line endings. A Windows clipboard, a `core.autocrlf` checkout or a
+#      browser download turns every LF into CRLF. `prosrc` stores a function
+#      body byte-for-byte, so all seven pinned bodies gain carriage returns the
+#      template's own file does not have and every digest misses. THIS is what
+#      bit the client; normalizing the digest input in 0002 is the fix.
+#   2. The whole file as ONE query string, how the Editor submits a buffer.
+#      `psql -f` splits on `;` and sends statements one at a time. Be precise
+#      about what this buys: 0002 wraps itself in an explicit `begin;`/`commit;`,
+#      so both transports give IT the same transaction shape, and this arm does
+#      NOT test 0002's transaction handling. It differs for 0001, which is a
+#      pg_dump with no explicit transaction and therefore runs as 207 separate
+#      statements under `-f` and as one implicit transaction here.
+#
+# WHAT IT DOES NOT REPRODUCE. There is no browser, no HTTP, no pg_meta and no
+# Supabase role switching here. This is a faithful transport mimic, not the
+# Editor. It catches the byte-level and transaction-shape classes; it would not
+# catch something that depends on the dashboard's own session setup.
+#
+# WHY THESE MUTATIONS. Two jobs, and they are not the same job.
+#   - The clean-CRLF-install case is the REGRESSION GUARD. That one case is the
+#     client's failure, and it is the whole reason this PART exists.
+#   - The lone-CR-in-a-string-literal case is the DESIGN PIN. It is the only
+#     case in this file that distinguishes the normalization that shipped from
+#     the shorter one that looks equivalent and is not. Its comment explains it.
+#   - The remaining five are TRANSPORT COVERAGE: digest-only catches from the
+#     psql arm, re-run through the CRLF route to show the pin still bites once
+#     bodies arrive carrying carriage returns. They do not discriminate between
+#     normalizations and are not claimed to.
+EXPECTED_EDITOR_CASES=7
+eran=0
+
+# Same shape as run_case, and deliberately so — it recycles ONE database name
+# the same way, for the same reason, so the two arms cannot drift in how they
+# isolate a case. The single difference is the transport: every apply below goes
+# through the Editor-equivalent path, the mutation included.
+#
+# `ED_DB` is per-process like `DB` is, so two concurrent runs on one cluster
+# cannot drop each other's database mid-case — the failure the header records at
+# `DB`, which once reported 11 passed / 62 failed.
+ED_DB="${BC_ED_DB:-edmut_$$}"
+
+run_editor_case () {
+  local name="$1" expect="$2" mutation="$3"
+  # Set by the preflight when a fixture is too large to pass as one argument.
+  # The arm cannot run; `eran` deliberately stays behind EXPECTED_EDITOR_CASES so
+  # the count assertion at the end exits 1 rather than letting a silently absent
+  # arm read as a pass.
+  [ -n "$EDITOR_ARM_BLOCKED" ] && return
+  eran=$((eran+1))
+
+  esetup () {
+    local step="$1"; shift
+    $BASE "$@" >/dev/null 2>&1 && return 0
+    echo "  ERROR   setup failed [$step]: $name"; fail=$((fail+1)); return 1
+  }
+  esetup "create db" -c "drop database if exists $ED_DB;" -c "create database $ED_DB;" || return
+  esetup "stub"      -d "$ED_DB" -f "$SP/_supabase_surface_stub.sql"                   || return
+  # 0001 and 0002 as the Editor delivers them: CRLF, whole file, one statement.
+  esetup "0001 via editor path" -d "$ED_DB" -c "$(cat "$EDIR/0001.crlf.sql")"          || return
+  esetup "0002 first via editor path" -d "$ED_DB" -c "$(cat "$EDIR/0002.crlf.sql")"    || return
+
+  # THE ROUTE ITSELF IS ASSERTED, not assumed. Everything this PART claims rests
+  # on the carriage returns surviving the wire into `prosrc`. If a future psql,
+  # libpq or driver ever normalized them in transit, every case below would go
+  # green while quietly re-testing the LF path a second time — green for the
+  # wrong reason, which is the exact failure this PART exists to end. Checking
+  # the FIXTURE has CRs (above) does not check that the DATABASE stored them.
+  if ! $BASE -d "$ED_DB" -t -c "select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'basecamp' and position(chr(13) in p.prosrc) > 0" 2>/dev/null | grep -qE '^ *[1-9]'; then
+    echo "  ERROR   editor path stored NO carriage returns in any basecamp body: $name"
+    fail=$((fail+1)); return
+  fi
+
+  if [ -n "$mutation" ]; then
+    # Delivered through the same route. Note that most mutations below are
+    # written as a single line, so the CRLF conversion is a no-op on them and
+    # says nothing — the case that actually depends on carriage returns
+    # surviving builds them explicitly, in SQL, rather than trusting this.
+    printf '%s' "$mutation" | perl -pe 's/\n/\r\n/' > "$EDIR/mut.sql"
+    if ! $BASE -d "$ED_DB" -c "$(cat "$EDIR/mut.sql")" >/dev/null 2>&1; then
+      echo "  ERROR   mutation did not apply: $name"; fail=$((fail+1)); return
+    fi
+  fi
+  if $BASE -d "$ED_DB" -c "$(cat "$EDIR/0002.crlf.sql")" >/dev/null 2>&1; then got=COMMITTED; else got=REFUSED; fi
+  if [ "$got" = "$expect" ]; then
+    echo "  PASS  [$got] $name"; pass=$((pass+1))
+  else
+    echo "  FAIL  [got $got, wanted $expect] $name"; fail=$((fail+1))
+  fi
+}
+
+echo
+echo "=== PART 12: THE EDITOR PATH — both files pasted CRLF, whole-file, one statement ==="
+if [ -n "$EDITOR_ARM_BLOCKED" ]; then
+  echo "  ERROR   the editor arm cannot run: $EDITOR_ARM_BLOCKED"
+  echo "  ERROR   split the file, or apply it with a transport that does not pass it as one argument"
+  fail=$((fail+1))
+fi
+# THE REGRESSION GUARD. This is the client's failure, reproduced. Against the
+# pre-fix 0002 it goes red directly — 0002 refuses the clean CRLF install — and
+# the six cases after it go red too, but for a duller reason: their "0002 first"
+# setup step is that same refusal, so they report `setup failed` rather than a
+# verdict. Do not read that as six independent findings; there is one bug here
+# and this is the case that names it.
+run_editor_case "clean CRLF paste of 0001 and 0002 must commit" COMMITTED ""
+# THE CASE THAT PINS THE CHOICE OF NORMALIZATION, and it is the only one here
+# that does. Read this before touching the `replace(replace(...))` in 0002.
+#
+# The obvious way to make a digest survive CRLF is to DELETE the carriage
+# returns: `md5(replace(prosrc, chr(13), ''))`. It is shorter, it fixes the
+# client's bug, and it passes every other case in this PART. It is also a hole,
+# because a carriage return is only insignificant OUTSIDE a string literal.
+#
+# `log_access_change` decides what the audit log records with
+# `case when tg_op = 'INSERT' then 'grant' else 'revoke' end`. Put a lone CR
+# inside that literal and the trigger writes `gr<CR>ant` into `access_audit`
+# forever — a different body, doing a different thing, on the one function that
+# exists to make grants reviewable. Under delete-the-CRs it hashes IDENTICALLY
+# to the shipped body and 0002 commits. Under the CR->LF mapping that shipped,
+# the literal normalizes to `gr<LF>ant`, the digest misses, and it is refused.
+#
+# So this case is the difference between the two implementations, and nothing
+# else in the suite is. The mutation is built in SQL from `pg_get_functiondef`
+# rather than written out here, because the whole point is a body that differs
+# from the pinned one ONLY by that one character — retyping it by hand would
+# differ in a dozen other ways and prove nothing.
+# The trailing assertion is what keeps this case honest. It only distinguishes
+# the two normalizations while the recreated body differs from the pinned one by
+# exactly that carriage return — i.e. while `pg_get_functiondef` round-trips this
+# function byte-for-byte. Give the function an attribute that renders differently
+# and the body would differ in other ways too, the case would stay REFUSED under
+# BOTH implementations, and the one case that pins the design choice would go
+# quietly vacuous. So it checks: with the carriage return removed the body must
+# still hash to the shipped digest. If it does not, the mutation refuses to apply
+# and the run says so, instead of passing for a reason that no longer holds.
+run_editor_case "CRLF route: lone CR inside a string literal in a pinned body" REFUSED "do \$m\$ declare def text; declare got text; begin select pg_get_functiondef(p.oid) into def from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'basecamp' and p.proname = 'log_access_change'; if def is null or position('''grant''' in def) = 0 then raise exception 'mutation precondition failed: no grant-literal to perturb'; end if; def := replace(def, '''grant''', '''gr' || chr(13) || 'ant'''); execute def; select md5(replace(p.prosrc, chr(13), '')) into got from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'basecamp' and p.proname = 'log_access_change'; if got <> '41d5a7b6ab0dc5b4cda44d794d729a7e' then raise exception 'this case has gone vacuous: with carriage returns deleted the mutated body no longer matches the pinned digest, so it no longer distinguishes delete-the-CRs from map-to-LF'; end if; end \$m\$;"
+# TRANSPORT COVERAGE, and no more than that. Each of the five is a wholesale
+# body replacement already covered on the psql arm; none discriminates between
+# the two normalizations, and none is claimed to. They are here to show the
+# checks still bite once bodies arrive carrying carriage returns.
+#
+# Be precise about WHICH check catches each, because "digest-only" would be
+# wrong for two of them: `is_super_admin -> select true` is refused upstream of
+# the digest, by the mention check that requires `basecamp.super_admins` and
+# `auth.uid()` in the body; `list_people gains an ungated overload` is refused by
+# the arity half of the pin loop (`count(p.oid) <> 1`), not by a digest
+# comparison. The other three are genuine digest-only catches. Verified by
+# removing the DIGEST HALF of the pin loop and re-running: those three flip to
+# COMMITTED, the other two stay REFUSED. Remove the whole loop instead and the
+# overload flips too, which is the arity half showing its work.
+run_editor_case "CRLF route: is_super_admin() stubbed to 'select true'" REFUSED "create or replace function basecamp.is_super_admin() returns boolean language sql stable security definer set search_path='' as \$\$ select true \$\$;"
+run_editor_case "CRLF route: is_super_admin stubbed, tokens hidden in a COMMENT" REFUSED "create or replace function basecamp.is_super_admin() returns boolean language sql stable security definer set search_path='' as \$\$ select true /* basecamp.super_admins auth.uid() */ \$\$;"
+run_editor_case "CRLF route: list_people keeps auth.users, drops its admin gate" REFUSED "create or replace function basecamp.list_people() returns table(id uuid, email text, created_at timestamptz, is_super_admin boolean) language sql stable security definer set search_path='' as \$x\$ select u.id, u.email::text, u.created_at, exists (select 1 from basecamp.super_admins s where s.user_id = u.id) from auth.users u where u.email is not null order by u.email \$x\$;"
+run_editor_case "CRLF route: log_access_change body altered" REFUSED "create or replace function basecamp.log_access_change() returns trigger language plpgsql security definer set search_path='' as \$\$ begin insert into basecamp.access_audit (action, source_table) values ('grant','members'); return null; end \$\$;"
+run_editor_case "CRLF route: list_people gains an ungated overload" REFUSED "create function basecamp.list_people(p int) returns table(id uuid, email text, created_at timestamptz) language sql stable security definer set search_path='' as \$x\$ select u.id, u.email::text, u.created_at from auth.users u \$x\$;"
+
 echo
 echo
-echo "=== TOTAL: $pass passed, $fail failed (of $EXPECTED_CASES expected) ==="
+echo "=== TOTAL: $pass passed, $fail failed (of $((EXPECTED_CASES + EXPECTED_EDITOR_CASES)) expected) ==="
+echo "===   psql/LF arm: $ran case(s)    editor/CRLF arm: $eran case(s) ==="
+# The two transports are counted apart on purpose. Rolled into one number, the
+# editor arm could be lost to a merge and the total would still read plausibly
+# beside a slightly different EXPECTED_CASES — which is how the route a client
+# actually uses came to be untested in the first place.
 if [ "$ran" -ne "$EXPECTED_CASES" ]; then
-  echo "CASE COUNT CHANGED: ran $ran, expected $EXPECTED_CASES." >&2
+  echo "CASE COUNT CHANGED: psql arm ran $ran, expected $EXPECTED_CASES." >&2
   echo "A case was added or lost. If deliberate, update EXPECTED_CASES in the same commit." >&2
+  exit 1
+fi
+if [ "$eran" -ne "$EXPECTED_EDITOR_CASES" ]; then
+  echo "CASE COUNT CHANGED: editor arm ran $eran, expected $EXPECTED_EDITOR_CASES." >&2
+  echo "A case was added or lost. If deliberate, update EXPECTED_EDITOR_CASES in the same commit." >&2
   exit 1
 fi
 if [ "$whitelist_hits" -ne "$EXPECTED_WHITELIST_HITS" ]; then

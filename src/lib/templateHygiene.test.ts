@@ -432,14 +432,23 @@ test("the security boundary still pins the access-model bodies and the trigger-f
     "can_read_entry",
     "can_read_category",
     "log_access_change",
+    // The one that returns other people's email addresses, and the one 0002
+    // itself calls "the weakest place to be lenient". It was pinned in 0002 on
+    // 2026-08-17 and this list was not updated, so the only always-on guard
+    // against a dropped pin had a blind spot over exactly the PII function.
+    "list_people",
   ];
   assert.deepEqual(
     mustPin.filter((fn) => !pinned.has(fn)),
     [],
     "0002 no longer pins an access-model function body by md5. Without the pin, that " +
       "function can be rewritten to a constant and 0002 still commits. Re-derive a digest " +
-      "only after READING the new body:\n" +
-      "  select proname, md5(prosrc) from pg_proc p join pg_namespace n on n.oid = p.pronamespace\n" +
+      "only after READING the new body — and hash the NORMALIZED text, exactly as 0002 does, " +
+      "or a digest re-derived on a database provisioned through a CRLF paste will refuse every " +
+      "clean install afterwards:\n" +
+      "  select proname,\n" +
+      "         md5(replace(replace(prosrc, chr(13)||chr(10), chr(10)), chr(13), chr(10)))\n" +
+      "    from pg_proc p join pg_namespace n on n.oid = p.pronamespace\n" +
       "   where n.nspname = 'basecamp' and proname = '<fn>';",
   );
 
@@ -542,5 +551,79 @@ test("the mutation suite's declared case count matches the cases it actually run
     `EXPECTED_CASES says ${declared[1]} but the file makes ${invocations} run_case calls. ` +
       "The suite would exit 1 on a correct tree. Change both in the same commit — and if you " +
       "are about to lower EXPECTED_CASES, check first that a case was not silently lost.",
+  );
+});
+
+/**
+ * The same guard for the Editor-path arm, which needs it MORE than the psql
+ * arm does. The psql arm is what everyone runs by habit; the editor arm exists
+ * because a route nobody exercised broke a client's provision, and an arm that
+ * can quietly shrink to zero cases while the file still prints green is that
+ * same failure wearing a different hat. Counted separately because the suite
+ * counts them separately, and for the same reason: one rolled-up number is
+ * where a lost arm hides.
+ */
+test("the mutation suite's declared editor-arm case count matches the cases it runs", () => {
+  const suite = readFileSync(
+    path.join(ROOT, "supabase", "tests", "boundary_mutations.sh"),
+    "utf8",
+  );
+
+  const declared = /^EXPECTED_EDITOR_CASES=(\d+)$/m.exec(suite);
+  assert.ok(
+    declared,
+    "boundary_mutations.sh must declare EXPECTED_EDITOR_CASES=<n> — the Editor-path arm is " +
+      "not optional; it is the only arm that covers the route clients actually use.",
+  );
+
+  // `^run_editor_case "` — same discipline as above: the opening quote is what
+  // separates the invocations from the one `run_editor_case () {` definition.
+  const invocations = (suite.match(/^run_editor_case "/gm) ?? []).length;
+
+  assert.equal(
+    invocations,
+    Number(declared[1]),
+    `EXPECTED_EDITOR_CASES says ${declared[1]} but the file makes ${invocations} ` +
+      "run_editor_case calls. The suite would exit 1 on a correct tree. Change both in the " +
+      "same commit — and if you are about to lower it, check first that a case was not lost.",
+  );
+});
+
+/**
+ * The editor arm is only an editor arm if it actually converts the files to
+ * CRLF and applies them whole. Both properties are one deleted line away from
+ * silently becoming a second copy of the psql arm, six green cases and all —
+ * and green-for-the-wrong-reason is the precise failure this arm was added to
+ * end. The suite checks the fixtures at runtime; this checks that the code
+ * which builds them is still there at all, with no database.
+ */
+test("the Editor-path arm still converts to CRLF and applies whole files", () => {
+  const suite = readFileSync(
+    path.join(ROOT, "supabase", "tests", "boundary_mutations.sh"),
+    "utf8",
+  );
+
+  assert.match(
+    suite,
+    /perl -pe 's\/\\n\/\\r\\n\/' "\$REPO\/supabase\/migrations\/0001_baseline\.sql"/,
+    "the editor arm no longer builds a CRLF copy of 0001 — without it the arm re-tests the " +
+      "LF path and reports green for a route it never touched.",
+  );
+  assert.match(
+    suite,
+    /perl -pe 's\/\\n\/\\r\\n\/' "\$TPL"/,
+    "the editor arm no longer builds a CRLF copy of 0002.",
+  );
+  // Whole-file `-c`, not `-f`: `-f` splits on `;` and sends statements one at a
+  // time. The match deliberately omits the CASE LABEL, which is prose and was
+  // reworded once already; it does still name `$EDIR` and the fixture file,
+  // because those are the thing being asserted and there is no way to check the
+  // shape without them. Rename either and this test fails — correctly, but for a
+  // reason worth knowing before you go looking for a real defect.
+  assert.match(
+    suite,
+    /-c "\$\(cat "\$EDIR\/0001\.crlf\.sql"\)"/,
+    "the editor arm no longer applies 0001 as one whole-file statement — with `-f` it " +
+      "would split on `;` and stop being an Editor mimic.",
   );
 });

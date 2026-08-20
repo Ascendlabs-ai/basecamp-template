@@ -769,9 +769,15 @@ begin
   -- to `authenticated`. Pinned now, like the rest.
   --
   -- If you deliberately change one, re-derive with:
-  --   select proname, md5(prosrc) from pg_proc p
+  --   select proname,
+  --          md5(replace(replace(prosrc, chr(13)||chr(10), chr(10)), chr(13), chr(10)))
+  --     from pg_proc p
   --     join pg_namespace n on n.oid = p.pronamespace
   --    where n.nspname = 'basecamp' and proname = '<fn>';
+  -- Hash the NORMALIZED text, not `prosrc` raw — see the note below on why the
+  -- pin reads it that way. Re-deriving from raw `prosrc` on a database that was
+  -- provisioned through a CRLF path bakes that path's carriage returns into the
+  -- pin, and the template then refuses every clean LF install.
   -- `not exists (… proname = fn AND md5 = expected)` pins *a* function of that
   -- name, not the callable SURFACE. PROVEN: add an OVERLOAD —
   -- `basecamp.list_people(p int)` returning `select u.id, u.email … from
@@ -784,6 +790,56 @@ begin
   -- So the arity is pinned too. Each of these names ships exactly once; a second
   -- signature is not an extension, it is a second implementation of a decision
   -- this file exists to pin.
+  --
+  -- LINE ENDINGS ARE NORMALIZED BEFORE HASHING, and this is load-bearing.
+  -- `prosrc` is the body's raw text, carriage returns and all. Paste 0001 into
+  -- the Supabase SQL Editor from a clipboard or a checkout that carries CRLF
+  -- and every one of the seven bodies stores `\r\n` where this template's own
+  -- file has `\n` — same function, different bytes, and all seven digests below
+  -- miss. That is not a hypothesis: it is the failure that stopped a client
+  -- mid-provision, with 0001 clean and 0002 refusing at this exact loop. The
+  -- suite reproduces it — `boundary_mutations.sh`, the Editor-path arm.
+  --
+  -- WHAT THIS DOES NOT DO. It maps CRLF and lone CR to LF; it does not strip
+  -- them. Nothing else about the body is touched — not whitespace, not case,
+  -- not comments. Two bodies collide here only if they are identical once
+  -- their line terminators agree, which is to say they are the same body typed
+  -- on two operating systems. A body with a statement added, removed or
+  -- altered still differs and is still refused; the suite proves that too,
+  -- under the Editor-path arm, on a body mutated after normalization landed.
+  --
+  -- DO NOT SIMPLIFY THIS TO `replace(prosrc, chr(13), '')`. Deleting the
+  -- carriage returns is shorter, fixes the client's bug, and passes every other
+  -- case in the suite. It is also a hole, and the suite has one case whose only
+  -- job is to stop you: "CRLF route: lone CR inside a string literal in a
+  -- pinned body".
+  --
+  -- A carriage return is insignificant to SQL only OUTSIDE a string literal.
+  -- `log_access_change` chooses what the audit log records with
+  -- `case when tg_op = 'INSERT' then 'grant' else 'revoke' end`. Put a lone CR
+  -- inside that literal and the trigger writes `gr<CR>ant` into `access_audit`
+  -- from then on — a different body doing a different thing, on the function
+  -- that exists to make grants reviewable. Delete-the-CRs hashes it IDENTICALLY
+  -- to the shipped body and commits. PROVEN: switching this expression to the
+  -- deleting form turns that case from REFUSED to COMMITTED and nothing else in
+  -- the suite moves. Mapping to LF gives `gr<LF>ant`, the digest misses, refused.
+  --
+  -- THE ONE PRECONDITION, and it is re-checked at the only moment it can break.
+  -- Because line terminators are insignificant OUTSIDE literals, this
+  -- normalization is exactly as safe as the claim that no pinned body contains a
+  -- literal spanning a line break. VERIFIED on the bodies this template ships:
+  -- scanning each `prosrc` quote by quote, honouring `''` escapes, finds zero
+  -- literals with a CR or LF inside — `log_access_change` has 72 quote
+  -- characters and not one such literal. So the bodies that collide with a
+  -- pinned one are exactly those differing from it only in line terminators:
+  -- the same SQL typed on a different operating system. The pin loses nothing.
+  --
+  -- If you change one of these bodies you must re-derive its digest anyway, and
+  -- that is the moment to re-read this: a new body carrying a multi-line string
+  -- literal would put real text inside that equivalence class. Nothing
+  -- machine-checks the precondition, deliberately — a literal scanner written in
+  -- PL/pgSQL and got subtly wrong would refuse correct installs, which is the
+  -- failure this whole change exists to end.
   detail := '';
   for bad in
     select f.fn, count(p.oid) as n from (values
@@ -799,7 +855,9 @@ begin
       on p.proname = f.fn
     group by f.fn, f.expected
     having count(p.oid) <> 1
-        or count(*) filter (where md5(p.prosrc) = f.expected) <> 1
+        or count(*) filter (
+             where md5(replace(replace(p.prosrc, chr(13) || chr(10), chr(10)),
+                               chr(13), chr(10))) = f.expected) <> 1
   loop
     detail := detail || format(E'\n    %s (%s definition(s) in basecamp)', bad.fn, bad.n);
   end loop;

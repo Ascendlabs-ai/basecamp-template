@@ -92,6 +92,19 @@ moment they come up.
 - [ ] **Deploy to Vercel.** Connect this repository and set the same two environment variables
       there. Nothing else is needed.
 
+- [ ] **Narrow the `.env.*` deny in `.claude/settings.json`, or CLAUDE.md's `.env.local` policy
+      cannot be carried out.** Added 2026-08-19. The policy now says Claude creates `.env.local`
+      from the example and fills in the two non-sensitive values. The deny rule `Read(./.env.*)`
+      blocks that completely: it applies to the Read tool, to Write, and to any shell command
+      that reads the file's contents (`cat` and `grep` are refused even though `Bash(cat:*)` is
+      allowed), and its pattern also matches `.env.local.example`, so the builder can neither read
+      the template nor create the file. Existence checks such as `test -f` do still work. The
+      proposed
+      replacement is in the session report and in `docs/stream-b-notes-2026-08-19.md`; the shape
+      of it is to keep denying reads of `.env.local` itself, allow reading `.env.*.example`, and
+      decide whether creating `.env.local` is an allow or an ask. Claude cannot make this change —
+      `.claude/` is the owner's.
+
 ## Review record — Admin → Catalog (Stream B)
 
 **Committed as a recorded override: `threshold_met: false`, zero HARD findings.**
