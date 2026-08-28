@@ -127,3 +127,79 @@ test("timestamps are pinned to en-GB/UTC so server and client agree", () => {
   // And a near-midnight instant must not drift a day.
   assert.equal(formatAuditTime("2026-03-12T23:45:00+00:00"), "12 Mar 2026, 23:45");
 });
+
+// ---------------------------------------------------------------------------
+// Account lifecycle (source_table 'auth_admin') — added with 0004
+// ---------------------------------------------------------------------------
+
+/** A lifecycle row. These carry no object: they are about a person, not access. */
+function lifecycle(over: Partial<AuditRow> = {}): AuditRow {
+  return row({
+    source_table: "auth_admin",
+    object_kind: null,
+    object_label: null,
+    ...over,
+  });
+}
+
+test("adding a person reads as adding a person, not as granting something", () => {
+  assert.equal(
+    describeAuditRow(lifecycle({ action: "invite" })),
+    "added person@example.com and issued a sign-in link",
+  );
+});
+
+test("a re-issued link is distinguishable from the original invite", () => {
+  // These two are the pair most likely to be confused when reading a log to
+  // answer "how did this person get in?".
+  const invited = describeAuditRow(lifecycle({ action: "invite" }));
+  const reissued = describeAuditRow(lifecycle({ action: "reissue_link" }));
+  assert.notEqual(invited, reissued);
+  assert.equal(reissued, "issued person@example.com a new sign-in link");
+});
+
+test("suspend and restore are opposites, and say so", () => {
+  assert.equal(
+    describeAuditRow(lifecycle({ action: "ban" })),
+    "suspended person@example.com's sign-in",
+  );
+  assert.equal(
+    describeAuditRow(lifecycle({ action: "unban" })),
+    "restored person@example.com's sign-in",
+  );
+});
+
+test("a lifecycle row never renders as a grant sentence", () => {
+  // The regression this branch exists to prevent: falling through to the
+  // generic tail, which assumes grant/revoke and would describe a suspension as
+  // "granted something that no longer exists to someone".
+  for (const action of ["invite", "reissue_link", "ban", "unban"] as const) {
+    const text = describeAuditRow(lifecycle({ action }));
+    assert.doesNotMatch(text, /granted|revoked|no longer exists/, action);
+  }
+});
+
+test("a lifecycle row with no subject still reads as a sentence", () => {
+  assert.equal(
+    describeAuditRow(lifecycle({ action: "ban", subject_label: null })),
+    "suspended someone's sign-in",
+  );
+});
+
+test("a super_admins row is still about administrators, not about accounts", () => {
+  // The two sources are adjacent in meaning and must not blur: 'super_admins'
+  // is a promotion, 'auth_admin' is an account action.
+  assert.equal(
+    describeAuditRow(row({ source_table: "super_admins", action: "grant" })),
+    "made person@example.com an administrator",
+  );
+});
+
+test("adoption is distinguishable from an invite — it must not claim a link was issued", () => {
+  // The distinction an auditor needs: which rows actually minted a credential.
+  // Adoption gives an existing account access to this app and issues nothing.
+  const adopted = describeAuditRow(lifecycle({ action: "adopt" }));
+  assert.doesNotMatch(adopted, /link/i);
+  assert.notEqual(adopted, describeAuditRow(lifecycle({ action: "invite" })));
+  assert.match(adopted, /already had an account/i);
+});

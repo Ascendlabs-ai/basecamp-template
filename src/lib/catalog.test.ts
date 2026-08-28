@@ -70,6 +70,7 @@ test("a category with zero visible entries is dropped entirely", () => {
       name: "Secret Category",
       description: "Should never reach the DOM",
       sort_order: 99,
+      parent_id: null,
       entries: [],
     },
   ];
@@ -196,4 +197,65 @@ test("filtering never mutates the input", () => {
   const before = JSON.stringify(fixture);
   filterCatalog(fixture, "engine");
   assert.equal(JSON.stringify(fixture), before);
+});
+
+test("a container parent survives when a subcategory of it is visible", () => {
+  // The arrangement nesting exists for: tiles live in the child, the parent is
+  // a grouping. Dropping the parent here would render its children as unrelated
+  // top-level blocks and make the grouping invisible — and the database (0005's
+  // category_or_child_has_grant) now returns the parent for the same reason.
+  const parent: CatalogCategory = {
+    id: "p", slug: "finance", name: "Finance", description: "Container",
+    sort_order: 10, parent_id: null, entries: [],
+  };
+  const child: CatalogCategory = { ...fixture[0], id: "c", slug: "fin-rep", parent_id: "p" };
+  const { visible } = visibleCategories([parent, child]);
+  assert.deepEqual(visible.map((c) => c.id), ["p", "c"]);
+});
+
+test("a category with nothing visible inside it is STILL dropped", () => {
+  // The invariant visibleCategories exists for, and the one the container rule
+  // must not break: an empty category with no visible children would otherwise
+  // disclose its name and description to somebody granted nothing in it.
+  const empty: CatalogCategory = {
+    id: "e", slug: "secret", name: "Secret", description: "Must not reach the DOM",
+    sort_order: 99, parent_id: null, entries: [],
+  };
+  const alsoEmptyChild: CatalogCategory = { ...empty, id: "ec", slug: "secret-sub", parent_id: "e" };
+  const { visible } = visibleCategories([empty, alsoEmptyChild]);
+  assert.deepEqual(visible, []);
+});
+
+test("an empty parent is not rescued by an empty child", () => {
+  const parent: CatalogCategory = {
+    id: "p2", slug: "hollow", name: "Hollow", description: "x",
+    sort_order: 1, parent_id: null, entries: [],
+  };
+  const child: CatalogCategory = { ...parent, id: "c2", slug: "hollow-sub", parent_id: "p2" };
+  assert.equal(visibleCategories([parent, child]).visible.length, 0);
+});
+
+test("searching does not collapse a container parent out of the results", () => {
+  // N3: a container has no entries of its own EVER, so a plain
+  // `entries.length > 0` filter dropped it the moment anyone typed — the
+  // grouping was present and then vanished on the first keystroke, with its
+  // subcategory promoted to an un-nested heading.
+  const parent: CatalogCategory = {
+    id: "p", slug: "finance", name: "Finance", description: "Container",
+    sort_order: 10, parent_id: null, entries: [],
+  };
+  const child: CatalogCategory = { ...fixture[0], id: "c", slug: "fin-rep", parent_id: "p" };
+  const needle = child.entries[0].display_name.slice(0, 4);
+  const got = filterCatalog([parent, child], needle);
+  assert.ok(got.some((c) => c.id === "p"), "the container parent was dropped by the search");
+  assert.ok(got.some((c) => c.id === "c"));
+});
+
+test("a container parent whose children match nothing is still dropped", () => {
+  const parent: CatalogCategory = {
+    id: "p", slug: "finance", name: "Finance", description: "Container",
+    sort_order: 10, parent_id: null, entries: [],
+  };
+  const child: CatalogCategory = { ...fixture[0], id: "c", slug: "fin-rep", parent_id: "p" };
+  assert.deepEqual(filterCatalog([parent, child], "zzzznomatchzzzz"), []);
 });

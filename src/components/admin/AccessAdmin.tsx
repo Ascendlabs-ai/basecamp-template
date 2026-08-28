@@ -8,26 +8,28 @@ import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Paper from "@mui/material/Paper";
 import Snackbar from "@mui/material/Snackbar";
-import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
-import { visuallyHidden } from "@mui/utils";
 
 import TopBar from "@/components/shell/TopBar";
 import {
+  ADD_PERSON_KEY,
   CREATE_TYPE_KEY,
+  adminRoleKey,
+  banKey,
   deleteTypeKey,
   describeError,
+  describeTrustRootRefusal,
   effectiveEntryCount,
   indexGrants,
   indexMembers,
   indexTypeGrants,
   memberKey,
   pendingKey,
-  resetKey,
+  signInLinkKey,
   typeGrantKey,
 } from "@/lib/adminAccess";
 import { createClient } from "@/lib/supabase/client";
-import { createRecoverySender } from "@/lib/supabase/recovery";
+import { postAdmin } from "@/lib/adminApi";
 import type {
   AdminView,
   AuditRow,
@@ -41,16 +43,14 @@ import type {
 } from "@/types/admin";
 
 import AccessMatrix from "./AccessMatrix";
+import AddPersonDialog from "./AddPersonDialog";
 import AuditLog from "./AuditLog";
+import LinkRevealDialog from "./LinkRevealDialog";
 import GrantsByPerson from "./GrantsByPerson";
 import PersonList from "./PersonList";
 import TypesAdmin from "./TypesAdmin";
 import ViewSwitch from "./ViewSwitch";
 import { failedWrite, useAdminWrite } from "./useAdminWrite";
-
-/** Stated in two places — the tooltip and an aria-describedby target. */
-const INVITE_REASON =
-  "Not built. People already exist in the shared Supabase Auth directory — onboarding here is a type assignment, not an invite.";
 
 /**
  * Admin · Access — three views over one access model.
@@ -74,6 +74,7 @@ const INVITE_REASON =
 export default function AccessAdmin({
   people,
   categories,
+  categoryNames,
   launchableCategories,
   initialGrants,
   memberTypes,
@@ -85,6 +86,12 @@ export default function AccessAdmin({
 }: {
   people: Person[];
   categories: GrantCategory[];
+  /**
+   * Every category by id, INCLUDING container parents that hold no entries of
+   * their own and are therefore absent from `categories`. Used only to label a
+   * subcategory with its parent — never to decide access.
+   */
+  categoryNames: Map<string, { name: string }>;
   launchableCategories: GrantCategory[];
   initialGrants: Grant[];
   memberTypes: MemberType[];
@@ -105,6 +112,12 @@ export default function AccessAdmin({
         : viewParam === "audit"
           ? "audit"
           : "person";
+
+  // The add dialog, and the one link it (or a re-issue) produces. `link` holds
+  // a credential, so it lives in state for as long as the dialog is open and
+  // nowhere else — never in a notice, an error, a log line or an audit row.
+  const [addOpen, setAddOpen] = useState(false);
+  const [link, setLink] = useState<{ link: string; email: string; created: boolean } | null>(null);
 
   const [grants, setGrants] = useState<Grant[]>(initialGrants);
   const [members, setMembers] = useState<Member[]>(initialMembers);
@@ -431,56 +444,188 @@ export default function AccessAdmin({
   );
 
   /**
-   * Send a password-recovery email to one person.
+   * Issue a fresh sign-in link for someone who already exists.
    *
-   * This is the PUBLIC recovery endpoint — the same one a "forgot password" link
-   * uses — called with the anon key. It is not an admin API and it needs no
-   * service role: it does not read, change or reveal anything about the account.
-   * All it does is ask Supabase to email that address a single-use link, and
-   * only whoever can open that mailbox can complete it. The administrator never
-   * sees or sets the password.
+   * REPLACES an older `resetPasswordForEmail` call. That one asked Supabase to
+   * EMAIL the person, which meant it depended on the project's mail transport —
+   * and on the built-in service that reaches only the Supabase organisation's
+   * own members, at roughly two messages an hour. It reported "sent" in every
+   * case, including the ones where nothing would ever arrive, because the
+   * endpoint answers 200 for a real and an unknown address alike. An
+   * administrator had no way to tell a delivered link from a silently dropped
+   * one.
    *
-   * `redirectTo` must be on the project's allow-list (Authentication → URL
-   * Configuration) or Supabase silently substitutes the Site URL, which is how
-   * this ends up mailing people a link to localhost.
-   *
-   * The result is deliberately indistinguishable for a real and an unknown
-   * address — the endpoint answers 200 either way, and this reports "sent"
-   * either way. Reporting "no such user" would turn an admin screen into an
-   * account-enumeration oracle for whoever is sitting at it.
+   * This sends nothing. The route mints the token and returns the URL, and the
+   * administrator hands it over themselves — so "it worked" and "they have it"
+   * are the same event rather than two, the second of which was never
+   * observable.
    */
-  const sendResetLink = useCallback(
+  const reissueLink = useCallback(
     (person: Person) =>
-      run(resetKey(person.id), async () => {
-        // NOT the app's browser client. That one is PKCE (hardcoded by
-        // @supabase/ssr and not overridable), which would store the code
-        // verifier in THIS administrator's browser and mail the recipient a
-        // link only this browser could complete. See lib/supabase/recovery.ts.
-        const supabase = createRecoverySender();
-        const { error: resetError } = await supabase.auth.resetPasswordForEmail(person.email, {
-          redirectTo: `${window.location.origin}/auth/reset`,
-        });
-        if (resetError) {
-          // Rate limiting is the expected failure here, and it is worth naming:
-          // Supabase caps recovery emails per address per hour, so a second
-          // click a minute later looks broken without this.
-          return `Could not send the link (${describeError(resetError)}). Supabase rate-limits recovery emails per address — if you just sent one, wait a few minutes.`;
+      run(signInLinkKey(person.id), async () => {
+        // BEFORE the request. An earlier version checked after, by which point
+        // the route had already minted a recovery token — which overwrites the
+        // one on screen, so the administrator was told to close a link that was
+        // now dead while the working replacement was discarded unread.
+        if (link) {
+          return "Close the sign-in link you already have open before issuing another.";
         }
-        // Deliberately "sent", not "delivered". The endpoint answers 200 for a
-        // real and an unknown address alike (that is what stops this screen
-        // becoming an enumeration oracle), and on Supabase's built-in email
-        // service it will also answer 200 for an address it silently will not
-        // deliver to — built-in mail reaches organisation members only, ~2/hour.
-        // Claiming delivery here would be claiming something this app cannot
-        // observe. See supabase/README.md → Email.
-        setNotice(`Password link sent to ${person.email}. If they do not receive it, check the project's SMTP settings — the built-in email service only reaches your Supabase organisation's own members.`);
+        const result = await postAdmin<{ link: string; email: string }>(
+          `/api/admin/people/${person.id}/link`,
+        );
+        if ("message" in result) return result.message;
+        // Straight into the reveal dialog. The link is never put in a notice or
+        // a log line — see LinkRevealDialog for why it is treated as a
+        // credential rather than a message.
+        setLink({ link: result.data.link, email: result.data.email, created: false });
         return null;
       }),
-    // `setNotice` is a useState setter and therefore stable, but it now arrives
-    // through a custom hook, where the lint rule cannot see that. Listing it is
-    // free — the identity never changes, so this callback is no more volatile
-    // than it was when the setter was declared in this file.
-    [run, setNotice],
+    [link, run],
+  );
+
+  /**
+   * Add someone: create the account, give them a type, reveal one link.
+   *
+   * Returns whether it worked, so the dialog knows whether to clear its fields.
+   */
+  const addPerson = useCallback(
+    async (email: string, memberTypeId: string) =>
+      run(ADD_PERSON_KEY, async () => {
+        if (link) {
+          return "Close the sign-in link you already have open before adding someone else.";
+        }
+        const result = await postAdmin<{
+          link: string | null;
+          email: string;
+          created: boolean;
+        }>(
+          "/api/admin/people",
+          { email, member_type_id: memberTypeId },
+        );
+        if ("message" in result) return result.message;
+
+        setAddOpen(false);
+        if (result.data.link === null) {
+          // An account that already existed elsewhere on this Supabase project
+          // and was not a member here. It has been given a type and recorded,
+          // but no credential is handed over on a click that was meant to add
+          // somebody — issuing one is a separate, deliberate act.
+          setNotice(
+            `${result.data.email} already had an account on this project and is now a member. ` +
+              "They can sign in with their existing password — or use Issue a sign-in link if they cannot.",
+          );
+        } else {
+          setLink({
+            link: result.data.link,
+            email: result.data.email,
+            created: result.data.created,
+          });
+        }
+        // The roster, the member rows and the audit log all changed server-side.
+        // Nothing here is written optimistically: an account either exists or it
+        // does not, and a fabricated row for one that failed to be created is a
+        // worse lie than a moment's delay.
+        resync();
+        return null;
+      }),
+    [link, resync, run, setNotice],
+  );
+
+  /**
+   * Promote or demote an administrator.
+   *
+   * STRAIGHT FROM THE BROWSER on the administrator's own token, like every
+   * other write on this screen and unlike the three account-lifecycle actions.
+   * There is no route because there is nothing for a route to add: since 0004
+   * granted the privileges, this is an ordinary RLS-decided write, and the
+   * INSERT policy's WITH CHECK gates on the CALLER — so the database refuses a
+   * non-administrator regardless of what any TypeScript believes. Adding a
+   * server hop would add a role check in application code, which CLAUDE.md is
+   * explicit is not a second lock.
+   *
+   * The two refusals that matter are both the database's: RLS for someone who
+   * is not an administrator, and the last-row trigger for the demotion that
+   * would leave nobody. `describeTrustRootRefusal` turns those into sentences.
+   */
+  const setAdmin = useCallback(
+    (person: Person, makeAdmin: boolean) =>
+      run(adminRoleKey(person.id), async () => {
+        const supabase = createClient();
+        // `.select()` ON THE DELETE, and this is not cosmetic. A DELETE that RLS
+        // refuses does NOT error — the policy FILTERS the row out and PostgREST
+        // answers 204 — so without asking for the deleted rows back a refused
+        // demotion renders as a successful one, and the trust root is untouched
+        // while the screen says otherwise. This file already learned that for
+        // grant revocation (see toggleGrant); the trust root is the last place
+        // to forget it. The last-admin trigger does not save us either: it is a
+        // BEFORE DELETE row trigger, and a row RLS filtered away never reaches
+        // it. Reachable whenever the acting administrator was demoted in
+        // another session.
+        const { data: rows, error: writeError } = makeAdmin
+          ? await supabase.from("super_admins").insert({ user_id: person.id }).select("user_id")
+          : await supabase.from("super_admins").delete().eq("user_id", person.id).select("user_id");
+
+        if (!writeError && (!rows || rows.length === 0)) {
+          resync();
+          return makeAdmin
+            ? "That change did not apply — you may no longer be an administrator. Reloading."
+            : "That change did not apply — they may already have been removed, or you may no longer be an administrator. Reloading.";
+        }
+
+        if (writeError) {
+          const explained = describeTrustRootRefusal(writeError);
+          if (explained) {
+            // A deliberate refusal, already explained. Resync anyway: the most
+            // common cause of the last-admin refusal is that the roster on
+            // screen is out of date about who else is an administrator.
+            resync();
+            return explained;
+          }
+          return failedWrite(
+            makeAdmin ? "Could not make them an administrator" : "Could not remove them as an administrator",
+            writeError,
+            resync,
+          );
+        }
+
+        setNotice(
+          makeAdmin
+            ? `${person.email} is now an administrator.`
+            : `${person.email} is no longer an administrator.`,
+        );
+        resync();
+        return null;
+      }),
+    [resync, run, setNotice],
+  );
+
+  /**
+   * Suspend or restore someone's sign-in.
+   *
+   * TOUCHES NO GRANTS, which is what makes it reversible — see the route for
+   * the full reasoning. The caveat about an already-issued token staying valid
+   * until it expires is repeated in the success message, because this is where
+   * somebody decides whether a suspension is enough for the situation they are
+   * actually in.
+   */
+  const setBanned = useCallback(
+    (person: Person, banned: boolean) =>
+      run(banKey(person.id), async () => {
+        const result = await postAdmin<{ banned: boolean }>(
+          `/api/admin/people/${person.id}/ban`,
+          { banned },
+        );
+        if ("message" in result) return result.message;
+
+        setNotice(
+          banned
+            ? `${person.email} can no longer sign in. A session they already have open stays valid for up to an hour — revoke their grants as well if this is urgent.`
+            : `${person.email} can sign in again, with the access they had before.`,
+        );
+        resync();
+        return null;
+      }),
+    [resync, run, setNotice],
   );
 
   /** Create a custom (non-system) type. */
@@ -496,9 +641,9 @@ export default function AccessAdmin({
           name: name.trim(),
           description,
           is_admin: false,
-          // Never is_system: that flag marks the four types the app refers to by
-          // slug and the database refuses to delete. A user-created type must
-          // stay deletable.
+          // Never is_system: that flag marks the three starter types 0004 seeds,
+          // which the database refuses to delete so that Add person always has
+          // a type to offer. A type someone creates here must stay deletable.
           is_system: false,
           sort_order: maxSort + 10,
         });
@@ -591,33 +736,15 @@ export default function AccessAdmin({
             { value: "audit", label: "Audit" },
           ]}
         />
-        <Tooltip title={INVITE_REASON}>
-          <Box component="span" sx={{ display: "inline-flex" }}>
-            {/* aria-disabled, not `disabled` — a disabled button leaves the tab
-                order, which made its own aria-describedby unreachable in focus
-                mode. Focusable and announced; the click does nothing. */}
-            <Button
-              variant="contained"
-              size="small"
-              aria-disabled
-              aria-describedby="invite-disabled-reason"
-              onClick={(e) => e.preventDefault()}
-              sx={(t) => ({
-                borderRadius: 50,
-                px: 2.25,
-                cursor: "not-allowed",
-                backgroundColor: t.palette.action.disabledBackground,
-                color: t.palette.text.disabled,
-                "&:hover": { backgroundColor: t.palette.action.disabledBackground, boxShadow: "none" },
-              })}
-            >
-              Invite staff
-            </Button>
-          </Box>
-        </Tooltip>
-        <Box component="span" id="invite-disabled-reason" sx={visuallyHidden}>
-          {INVITE_REASON}
-        </Box>
+        <Button
+          variant="contained"
+          size="small"
+          onClick={() => setAddOpen(true)}
+          disabled={pending.has(ADD_PERSON_KEY)}
+          sx={{ borderRadius: 50, px: 2.25 }}
+        >
+          Add person
+        </Button>
       </TopBar>
 
       <Box component="main" id="main-content" tabIndex={-1} sx={{ px: { xs: 2, md: 4 }, py: { xs: 2.5, md: 3 }, flex: 1, minWidth: 0 }}>
@@ -636,7 +763,12 @@ export default function AccessAdmin({
               counts={countsByPerson}
               members={memberIndex}
               typeById={typeById}
+              currentUserId={currentUserId}
+              pending={pending}
               onSelect={setSelectedId}
+              onReissueLink={reissueLink}
+              onSetAdmin={setAdmin}
+              onSetBanned={setBanned}
             />
             {selected ? (
               <GrantsByPerson
@@ -649,8 +781,8 @@ export default function AccessAdmin({
                 pending={pending}
                 onToggle={toggleGrant}
                 onAssign={assignMember}
-                onSendResetLink={sendResetLink}
-                resetPending={pending.has(resetKey(selected.id))}
+                onIssueSignInLink={reissueLink}
+                linkPending={pending.has(signInLinkKey(selected.id))}
               />
             ) : null}
           </Box>
@@ -658,6 +790,7 @@ export default function AccessAdmin({
           <AccessMatrix
             people={people}
             categories={launchableCategories}
+            categoryNames={categoryNames}
             grantIndex={grantIndex}
             typeGrantIndex={typeGrantIndex}
             memberIndex={memberIndex}
@@ -680,6 +813,24 @@ export default function AccessAdmin({
           />
         )}
       </Box>
+
+      <AddPersonDialog
+        open={addOpen}
+        memberTypes={memberTypes}
+        pending={pending.has(ADD_PERSON_KEY)}
+        onClose={() => setAddOpen(false)}
+        onSubmit={addPerson}
+      />
+
+      <LinkRevealDialog
+        open={link !== null}
+        link={link?.link ?? null}
+        email={link?.email ?? null}
+        created={link?.created ?? false}
+        // Dropping the link from state is what makes "not shown again" true
+        // rather than merely a claim in the copy.
+        onClose={() => setLink(null)}
+      />
 
       <Snackbar
         open={notice !== null}

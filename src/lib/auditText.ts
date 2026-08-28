@@ -47,6 +47,35 @@ export function describeAuditRow(row: AuditRow): string {
       ? `put ${who} on the ${type} type`
       : `removed ${who} from the ${type} type`;
   }
+  // Account lifecycle, from the admin API routes rather than a table trigger.
+  // These MUST branch before the generic tail below: that tail assumes
+  // grant/revoke and would render "granted something that no longer exists to
+  // someone" for every one of them — a sentence about access for an event that
+  // is not about access at all.
+  if (row.source_table === "auth_admin") {
+    const who = row.subject_label ?? "someone";
+    switch (row.action) {
+      case "invite":
+        return `added ${who} and issued a sign-in link`;
+      case "reissue_link":
+        return `issued ${who} a new sign-in link`;
+      case "ban":
+        return `suspended ${who}'s sign-in`;
+      case "unban":
+        return `restored ${who}'s sign-in`;
+      case "adopt":
+        // Deliberately does NOT say "issued a link", because that path issues
+        // none. An auditor asking which of these actually minted a credential
+        // must be able to tell from the row alone.
+        return `gave ${who}, who already had an account, access to this app`;
+      default:
+        // The database CHECK permits only the five above from this source, so
+        // this is unreachable by any write the app can make. Named rather than
+        // silently falling through, because reaching it means the constraint
+        // and this switch have drifted apart.
+        return `made an unrecognised account change for ${who}`;
+    }
+  }
   // 'unknown' means a trigger is attached to a table this app does not model.
   // The database CHECK permits it precisely so that case is recorded rather than
   // rejected, so it must not render as an ordinary grant.

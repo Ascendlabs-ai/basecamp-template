@@ -47,6 +47,11 @@ export interface CatalogCategory {
   name: string;
   description: string | null;
   sort_order: number;
+  /**
+   * The category this one sits under, or null for a top-level category. One
+   * level deep, enforced by the database (0005) rather than by any renderer.
+   */
+  parent_id: string | null;
   entries: CatalogEntry[];
 }
 

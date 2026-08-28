@@ -26,7 +26,9 @@ import {
   nextSortOrder,
   reorderEntriesKey,
   type EntryDraft,
+  categoryTree,
 } from "@/lib/catalogAdmin";
+import { categoryLabel } from "@/lib/adminAccess";
 import type { AdminCategory, AdminEntry } from "@/types/admin";
 
 import EntryDialog from "./EntryDialog";
@@ -72,11 +74,20 @@ export default function EntriesPanel({
   onRequestDelete: (id: string, label: string) => void;
   onGoToCategories: () => void;
 }) {
-  const orderedCategories = inRenderOrder(categories);
+  // PARENT-THEN-CHILDREN, not flat. `sort_order` is renumbered WITHIN sibling
+  // groups, so a flat sort puts a subcategory with sort_order 10 ahead of a
+  // top-level category with 20 — sections scattering through the list unrelated
+  // to their parents. Same grouping the home page and the entry dialog use.
+  const orderedCategories = categoryTree(categories).flatMap(({ category, children }) => [
+    { category, nested: false },
+    ...children.map((child) => ({ category: child, nested: true })),
+  ]);
+  /** Parents by id, so a subcategory section can name the one it sits under. */
+  const categoryById = new Map(categories.map((c) => [c.id, { name: c.name }]));
 
   const [quickName, setQuickName] = useState("");
   const [quickUrl, setQuickUrl] = useState("");
-  const [quickCategory, setQuickCategory] = useState(orderedCategories[0]?.id ?? "");
+  const [quickCategory, setQuickCategory] = useState(orderedCategories[0]?.category.id ?? "");
   // A DISCRIMINATED UNION, so `id` is a string exactly when the mode is "edit".
   // The previous shape (`id: string | null` for both modes) forced a non-null
   // assertion at the submit call — safe by construction, but only because one
@@ -101,9 +112,9 @@ export default function EntriesPanel({
    * administrator has since deleted, which would send a dead `category_id` to a
    * foreign key. Falling back at render keeps it valid without an effect.
    */
-  const selectedCategory = orderedCategories.some((c) => c.id === quickCategory)
+  const selectedCategory = orderedCategories.some((c) => c.category.id === quickCategory)
     ? quickCategory
-    : orderedCategories[0]?.id ?? "";
+    : orderedCategories[0]?.category.id ?? "";
 
   const quickAddBlocked = quickName.trim() === "" || quickUrl.trim() === "" || createPending;
 
@@ -229,9 +240,12 @@ export default function EntriesPanel({
             onChange={(e) => setQuickCategory(e.target.value)}
             sx={{ flex: 1, minWidth: 0 }}
           >
-            {orderedCategories.map((c) => (
-              <MenuItem key={c.id} value={c.id}>
-                {c.name}
+            {/* Indented, so choosing where a tile goes is unambiguous. Only
+                `slug` is unique — `uniqueSlug` dedupes slugs, not names — so
+                two subcategories genuinely can both be called "Reports". */}
+            {orderedCategories.map(({ category: c, nested }) => (
+              <MenuItem key={c.id} value={c.id} sx={nested ? { pl: 4 } : undefined}>
+                {nested ? categoryLabel(c, categoryById) : c.name}
               </MenuItem>
             ))}
           </TextField>
@@ -280,7 +294,7 @@ export default function EntriesPanel({
       </Paper>
 
       <Stack spacing={2}>
-        {orderedCategories.map((category) => {
+        {orderedCategories.map(({ category, nested }) => {
           const inCategory = inRenderOrder(entriesByCategory.get(category.id) ?? []);
           // Every arrow in THIS category — a reorder renumbers the whole list,
           // so until the resync lands the positions on screen are not the
@@ -292,7 +306,15 @@ export default function EntriesPanel({
               elevation={0}
               component="section"
               aria-labelledby={`cat-${category.slug}`}
-              sx={{ border: 1, borderColor: "divider", p: { xs: 1.5, sm: 2 } }}
+              sx={{
+                border: 1,
+                borderColor: "divider",
+                p: { xs: 1.5, sm: 2 },
+                // Indented and rule-marked, matching the categories panel, so a
+                // subcategory section reads as sitting under the one above it.
+                ml: nested ? { xs: 0, sm: 3 } : 0,
+                borderLeftWidth: nested ? 3 : 1,
+              }}
             >
               <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: inCategory.length ? 1.5 : 0 }}>
                 <Typography
@@ -300,7 +322,7 @@ export default function EntriesPanel({
                   component="h2"
                   sx={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "text.secondary", flex: 1 }}
                 >
-                  {category.name}
+                  {nested ? categoryLabel(category, categoryById) : category.name}
                 </Typography>
                 <Typography sx={{ fontSize: 11, color: "text.secondary" }}>
                   {inCategory.length} {inCategory.length === 1 ? "entry" : "entries"}
@@ -453,7 +475,7 @@ export default function EntriesPanel({
           open
           mode={dialog.mode}
           initial={dialog.draft}
-          categories={orderedCategories}
+          categories={categories}
           nextSortOrderFor={(categoryId) => nextSortOrder(entriesByCategory.get(categoryId) ?? [])}
           busy={dialog.mode === "edit" ? pending.has(entryKey(dialog.id)) : createPending}
           onCancel={() => setDialog(null)}

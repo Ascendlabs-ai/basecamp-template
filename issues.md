@@ -39,11 +39,14 @@ still makes sense.
 
 - [ ] **Delete `MAINTAINING.md` and `docs/`.** Both are for whoever maintains the template rather
       than for you: `MAINTAINING.md` covers re-extracting it from the private app it came from, and
-      `docs/` holds the specification the Catalog admin screens were built from. Nothing in the app
-      reads either. If you stamped this, they aren't for you.
+      `docs/` holds the notes recording why the catalog admin, the account-lifecycle path, the
+      category nesting and the line-ending normalization are built the way they are. Nothing in the
+      app reads either. If you stamped this, they aren't for you.
 
-- [ ] **Add your first few catalog entries** in Admin → Catalog, and confirm somebody with no grants sees an empty
-      catalog rather than an error. That's the check that proves access is actually working.
+- [ ] **Add your first few catalog entries** in Admin → Catalog, then **add your first person** in
+      Admin → Access and walk them through the link end to end. Confirm somebody with no grants
+      sees an empty catalog rather than an error — that's the check that proves access is actually
+      working, and the link walkthrough is the check that proves onboarding is.
 
 ## In progress
 
@@ -67,43 +70,73 @@ moment they come up.
 
 - [ ] **Apply the SQL files, in order:** `supabase/migrations/0001_baseline.sql`, then
       `0002_security_boundary.sql`, then — optionally — `0003_seed_categories.sql`, which adds
-      four empty starter categories and no schema at all. `0002` checks a long list of things
+      four empty starter categories and no schema at all, then `0004_admin_write_paths.sql`,
+      which opens the trust root's write path, adds the roster's ban and type columns, and seeds
+      the three starter member types **Add person** needs in order to offer anything —
+      without it, **Add person** and the ⋮ menu on the roster will not work — and finally
+      `0005_category_nesting.sql`, which adds `categories.parent_id` and the one-level depth cap.
+      **`0005` is required, not optional.** Three read paths — the home page, the catalog admin and
+      the access matrix — all select `parent_id`, so skipping it does not merely disable
+      subcategories: all three screens fail with `42703 column does not exist`, and the error names
+      a column rather than a migration. `0002` checks a long list of things
       about the security boundary and refuses to commit if any of them is wrong. Read **Known gaps in the security
       boundary** below before you treat a clean run as proof — there are things it does not
       catch, and you should know what kind of thing they are.
 
 - [ ] **Set the Auth URL configuration.** Authentication → URL Configuration: set the Site URL,
-      and add `/auth/reset` to the Redirect URLs. Get this wrong and Supabase does **not** error —
-      it silently substitutes the Site URL, which on a fresh project is localhost, and mails real
-      people a link to a machine they do not have.
+      and add **two** paths to the Redirect URLs — `/auth/confirm` and `/accept-invite` — on every
+      origin you use, localhost included. They are where an administrator-issued sign-in link lands
+      and where the person then chooses their password; without them the link comes back pointing
+      somewhere else and the person cannot get in. Get the Site URL wrong and Supabase does **not**
+      error — it silently substitutes it, which on a fresh project is localhost.
 
-- [ ] **Set up your own email sending, and raise the email rate limit.** Until you do, the built-in
-      mailer delivers only to members of your own Supabase organisation, at roughly two messages an
-      hour for the whole project. "Send password link" reports success either way — this is the
-      failure that shows up in front of somebody else.
+- [ ] **Nothing new for the catalog.** Category nesting needs no dashboard change — `0005` adds a
+      column, a trigger and a widened SELECT policy, all inside the `basecamp` schema that is
+      already exposed to the Data API by the first step above. Applying `0005` is the whole of it.
+
+- [ ] **Turn on Secure password change.** Authentication → Providers → Email → **Secure password
+      change**. Without it, any live session can set a new password without re-entering the current
+      one — so a borrowed or hijacked session becomes permanent account takeover. This is a project
+      setting, not something the app can enforce: `supabase.auth.updateUser({ password })` is
+      callable from any signed-in browser regardless of what `/accept-invite` does.
+
+- [ ] **Nothing to do about email, and that is the point.** This app sends none: **Add person**
+      and **Issue a sign-in link** display the link for you to pass on. There is no
+      forgot-password form to configure. Supabase itself will still mail a confirmation when
+      somebody signs up on your project, and the built-in mailer delivers only to members of your
+      own Supabase organisation at roughly two messages an hour — so if you ever add a flow of
+      your own that depends on delivery, attach your own SMTP **and** raise the rate limit
+      together. Each fails silently on its own; `supabase/README.md` has both.
 
 - [ ] **Create your own account, then make it the administrator.** Create the account yourself in the
       Supabase dashboard. Making it an administrator is one INSERT into
-      `basecamp.super_admins` — the exact statement is in `supabase/README.md`.
+      `basecamp.super_admins` — the exact statement is in `supabase/README.md`. This is a
+      bootstrapping step and stays manual: it is the one administrator nobody can create from
+      inside the app. Everyone after them you add from `/admin/access` → **Add person**, including
+      promoting them from that person's ⋮ menu.
 
-- [ ] **Copy `.env.local.example` to `.env.local` and fill in the two values** from Project
-      Settings → API. The second one is the **anon** key, never the `service_role` key.
+- [ ] **Nothing to do about member types.** `0004` seeds three — Staff, Contractor, Client — and
+      marks them undeletable, because **Add person** has to have one to assign. Rename them on the
+      Types tab if the labels do not suit you; grants attach to the row rather than the label.
 
-- [ ] **Deploy to Vercel.** Connect this repository and set the same two environment variables
-      there. Nothing else is needed.
+- [ ] **Copy `.env.local.example` to `.env.local` and fill in the values** from Project
+      Settings → API. `NEXT_PUBLIC_SUPABASE_ANON_KEY` is the **anon** key, never the
+      `service_role` key. `SUPABASE_SERVICE_ROLE_KEY` is separate and is what **Add person**,
+      **Issue a sign-in link** and **Suspend** need; without it the app runs but you are back to
+      creating each person by hand in the dashboard. Read the note beside it before setting it.
 
-- [ ] **Narrow the `.env.*` deny in `.claude/settings.json`, or CLAUDE.md's `.env.local` policy
-      cannot be carried out.** Added 2026-08-19. The policy now says Claude creates `.env.local`
-      from the example and fills in the two non-sensitive values. The deny rule `Read(./.env.*)`
-      blocks that completely: it applies to the Read tool, to Write, and to any shell command
-      that reads the file's contents (`cat` and `grep` are refused even though `Bash(cat:*)` is
-      allowed), and its pattern also matches `.env.local.example`, so the builder can neither read
-      the template nor create the file. Existence checks such as `test -f` do still work. The
-      proposed
-      replacement is in the session report and in `docs/stream-b-notes-2026-08-19.md`; the shape
-      of it is to keep denying reads of `.env.local` itself, allow reading `.env.*.example`, and
-      decide whether creating `.env.local` is an allow or an ask. Claude cannot make this change —
-      `.claude/` is the owner's.
+- [ ] **Deploy to Vercel.** Connect this repository and set the same environment variables there.
+      If you set `SUPABASE_SERVICE_ROLE_KEY`, add it as a **server-side** variable — it must never
+      gain a `NEXT_PUBLIC_` prefix.
+
+- [x] **DONE — the `.env.*` deny in `.claude/settings.json` was narrowed.** Raised 2026-08-19,
+      closed the same day. The catch-all `Read(./.env.*)` also matched `.env.local.example` and
+      applied to Write and to any shell command naming the path, so the builder could neither read
+      the example it is told to copy from nor create `.env.local` at all — the policy in CLAUDE.md
+      described something impossible. It is now Next.js's own enumerated env filenames plus
+      staging/preview, with `.env.local` moved to `ask`. **Known gap kept deliberately:** an env
+      file under some other name (`.env.ci`, `.env.qa`) is no longer covered by any rule; add the
+      name if you start using one. `docs/stream-b-notes-2026-08-19.md` has the full reasoning.
 
 ## Review record — Admin → Catalog (Stream B)
 
@@ -121,18 +154,51 @@ The gate's own arithmetic still scores the third review at 6.0/10, below its 8.0
 threshold, because that score is computed on the review as delivered rather than
 on the state after its findings were closed. Nothing hard remains, and nothing
 remaining is reachable by a client using a stamped app with client-held
-credentials. The last round of fixes is covered by the gates (127 tests,
-typecheck, lint, production build), by fresh installs on PostgreSQL 16 and 17,
-by the mutation suite at 96/96 on both arms, and by targeted live re-tests — but
-not by a fourth adversarial round, since three is the cap.
+credentials. The last round of fixes was covered by the gates (tests, typecheck,
+lint, production build), by fresh installs on PostgreSQL 16 and 17, by a full
+mutation-suite run, and by targeted live re-tests — but not by a fourth
+adversarial round, since three is the cap.
 
-One item is deliberately left open rather than fixed: `templateHygiene.test.ts`
-now exempts the originating organisation's name for `docs/`, the specification
-this work was built from. That is a decision, not a defect — the file is a
-maintainer document a stamped client can delete, and the exemption is scoped to
-one file and one pattern (verified: a credential in that same file still fails
-the suite). Note that the spec also names a maintainer by first name and names a
-test stamp repository, and the guard has no pattern for either.
+## Review record — account lifecycle and category nesting
+
+Ported in from a downstream stamp that built both features on top of this
+template, then reconciled against what this template actually ships. What
+arrived: `0004_admin_write_paths.sql` (Add person, issued sign-in links,
+suspend/restore, the audit writer, self-administering trust root),
+`0005_category_nesting.sql` (one level of subcategories), the `/api/admin/*`
+routes and the `src/lib/supabase/admin.ts` facade behind them, and the screens
+that use all of it.
+
+Four things were decided rather than merely merged, and each is worth knowing:
+
+- **The line-ending normalization won.** The ported `0004` pinned its audit
+  writer with a raw `md5(prosrc)`, as did `0002`'s new digest selector. On this
+  template that is a shipped-broken file: every Editor-route install of `0004`
+  would have been refused while the `psql` arm stayed green — the 2026-08-19
+  failure, one migration later. Verified by reverting the pin and re-running:
+  the `psql` arm reported 110 passed, and the Editor arm failed every case at
+  `0004 via editor path`. All of them are normalized now, and the Editor arm
+  applies the whole chain rather than stopping at `0002`, so nothing can
+  reintroduce it quietly.
+
+- **Member types are seeded.** Three source comments described starter types
+  that no migration created, so a fresh stamp had zero and **Add person** could
+  not be used. `0004` now seeds staff/contractor/client as `is_system`, asserts
+  it took, and the comments say what is true. See the note under Pending manual
+  steps.
+
+- **`/auth/reset` was removed rather than kept.** The template had a working
+  recovery-email sender; the ported branch replaced it with issued links and
+  left the page behind with nothing feeding it. Keeping both would have meant
+  two buttons doing the same job, one of which fails silently unless two
+  dashboard settings are right. `README.md` → "What is deliberately not here"
+  records the decision and its cost.
+
+- **Nothing client-specific came across.** The stamp's own standards-repository
+  line and its `.gitattributes` stayed behind; its two design documents were
+  de-identified into `docs/`, and the two places where they described a design
+  the implementation had deliberately rejected were corrected to describe what
+  shipped.
 
 ## Known limits
 
@@ -152,8 +218,10 @@ test stamp repository, and the guard has no pattern for either.
 **Read this once before you trust `0002`. It came with the template; you did not cause it.**
 
 `supabase/migrations/0002_security_boundary.sql` checks a long list of things and refuses to
-install if any of them is wrong. That is real — `supabase/tests/boundary_mutations.sh` breaks 92
-things one at a time and `0002` catches all but the six it is *designed* to repair or ignore. Two
+install if any of them is wrong. That is real — `supabase/tests/boundary_mutations.sh` breaks
+things one at a time, across four separately counted arms, and requires the file under test to
+refuse each; the handful it does NOT refuse are the ones it is *designed* to repair or ignore, and
+the file names each of them. Two
 of the gaps below were closed on **2026-08-17**; the rest were got past by review on that date,
 each proven on live PostgreSQL 16 and 17. `0002`'s own closing message is an enumerated list and every item on it is
 true; what is too strong is the shorthand *"if it commits, the boundary holds"* that these
@@ -243,26 +311,145 @@ from it gets the same one. Nothing here is worse than what shipped before **2026
 version handed every signed-in user the ability to forge entries in the audit log, which needed no
 administrator at all, and this one closes it.
 
+### Grants are flat, and a container category is invisible
+
+Two properties of category nesting that surprise people, both deliberate:
+
+- **`category_has_grant()` does not walk the tree.** Granting a parent grants
+  nothing about its subcategories. Making grants inherit is a real design
+  question — it would change what every existing grant means — so it is left
+  alone rather than half-done. The access matrix gives each category its own
+  column and labels subcategories with their parent.
+- **A category with nothing visible inside it stays hidden.** `0005` widened the
+  read rule by exactly one level — `category_or_child_has_grant()` — so a parent
+  used purely as a container DOES render once a viewer can see a tile in one of
+  its subcategories. What is still hidden is a category with no entries of its
+  own and no granted children, because a grant on an empty category would
+  otherwise disclose its name and description. The widening is bounded by the
+  depth cap: one join, no recursion.
+
+### The roster spans the whole Supabase project, and so does adoption
+
+`auth.users` is shared by every app on a Supabase project, and `basecamp.list_people()`
+deliberately returns all of it — that is what lets you onboard somebody who signed up and arrived
+with zero access. The consequence is that an administrator here can give **any** account on the
+project a member type, and once it has one, `/api/admin/people/[id]/link` and `.../ban` will act on
+it: a sign-in link for that account, or a suspension of it.
+
+There is no signal that distinguishes "self-signed-up, needs access" from "belongs to a different
+app on this project", so this is a property of sharing an auth directory rather than a defect with
+an obvious fix. What the app does do: `Add person` refuses to hand over a credential for an account
+it did not create — it assigns the type, records an `adopt` row, and shows no link — so adopting
+somebody is visible in the audit log rather than silent.
+
+**If that matters to you, give this app its own Supabase project.** That is the only complete
+answer, and it costs nothing to do at the start.
+
 ## Later
 
 Ideas worth keeping but not doing yet. Tag each one `(small)` or `(bigger)` so you can pick
 something that fits the time you have.
 
-- **A screen for adding and removing administrators.** `(bigger)` Today that's a SQL statement.
-  The database policies for a UI are already written and correct — the privileges are deliberately
-  withheld until something actually uses them.
-
-- **A way to invite someone.** `(bigger)` Right now adding a person means creating their account in
-  the Supabase dashboard and then granting them access in `/admin/access`.
-
 - **Check the colours really are all in one place.** `(small)` A few focus-ring colours sit
   outside the palette; the caveat is written up in `README.md` under Rebranding.
+
+- **Add person reads the whole roster to match one email.** `(small)` `POST /api/admin/people`
+  calls `list_people()`, which returns every account on the Supabase project, and then finds the
+  address client-side. That is fine at any size a client of this template will have, and it is
+  deliberate in one respect — it avoids minting a token merely to discover whether an account
+  exists. But it grows with the project's whole auth directory, not with this app's roster, so on
+  a Supabase project shared with other apps it is the first thing here that gets slower for
+  reasons unrelated to Basecamp. The fix is a narrow definer RPC carrying the same admin gate —
+  `basecamp.find_person_by_email(text)` returning at most one row.
+
+- **The mutation suite rebuilds an identical mirror once per case.** `(bigger)` Every case
+  replays roughly a quarter-second of DDL to arrive at the same schema. `CREATE DATABASE x
+  TEMPLATE mirror` costs about what the bare `create database` already costs, because template1
+  is copied either way — so building the mirror once and cloning it would take roughly half the
+  wall time off a full run without changing what any case means. Each case would still apply its
+  own mutation and re-apply the file under test. Not urgent: a full run is a couple of minutes and
+  it is deliberately not part of `npm test`.
 
 ## Done
 
 Move things here when you've *seen them work*, with the date. Say briefly what changed and how you
 checked — that's what makes this section useful six months from now instead of just long.
 
-_(nothing yet)_
+> **A note on the PART numbers below.** `boundary_mutations.sh` grew a fourth arm and its parts were
+> renumbered when the account-lifecycle and nesting work landed here. The counts in the older
+> entries are what was true on the day, and the part numbers they name have since moved: the
+> Editor-path arm is now PART 13, the runtime arms are PARTS 14-15, and `0004`-as-file-under-test is
+> PART 16. Left as written rather than back-dated — a record of what was checked is worth more than
+> a record that matches today's headings.
+
+- **The account-lifecycle path and category nesting, ported in and reconciled.** `2026-08-27`
+  Brought `0004`/`0005`, the three `/api/admin/*` routes, the `admin.ts` facade and the screens over
+  from a downstream stamp, then fixed what only mattered on this side. Full account in the review
+  record above.
+
+  **Checked, on PostgreSQL 17.10:** `boundary_mutations.sh` **120/120** static and Editor cases,
+  **21/21** runtime, **6/6** with `0004` as the file under test, exit 0. The documented chain
+  `stub → 0001 → 0002 → 0003 → 0004 → 0005 → seed.example.sql` applied clean and every file
+  re-applied idempotently, with `0002` still committing against the post-`0004` state. The
+  line-ending fix was proven by reverting it: with a raw `md5(prosrc)` in `0004` the psql arm still
+  reported 110 passed while the Editor arm failed every case at `0004 via editor path`.
+  `npm run lint && npx tsc --noEmit && npm test` clean (**191 tests**), production build clean.
+
+  **Not yet exercised in a browser** against a live Supabase project. The local mirror has no
+  PostgREST and the stub does not implement GoTrue's `generateLink`, so walk one person through
+  **Add person** → link → `/accept-invite` end to end before onboarding anybody.
+
+- **Build the catalog from the UI, including one level of subcategories.** `2026-08-26`
+  `/admin/catalog` creates, renames, reorders and deletes categories and entries, and a category
+  can now hold subcategories one level deep. `0005_category_nesting.sql` carries the database half:
+  `categories.parent_id` as an ON DELETE RESTRICT self-reference, and
+  `basecamp.enforce_category_depth()` capping the tree in both directions — downward (nesting under
+  a subcategory) and upward (giving a parent to a category that already has children), because
+  checking only the first lets a three-level tree be built from the bottom up.
+
+  No new grant and no new policy: `authenticated` already held SELECT/INSERT/UPDATE/DELETE on
+  `categories` from 0001 and the super_admin policies already governed all four, so adding a
+  category is settled by a policy rather than by a check in TypeScript.
+
+  **Checked:** the chain 0001→0005 applied clean on a throwaway PostgreSQL 17 cluster and re-applied
+  idempotently; `boundary_mutations.sh` ran **110/110 mutation, 21/21 runtime (PARTS 12+14) and 4/4
+  migration (PART 13)** cases green — PART 15 adds thirteen mutations that break the nesting guards
+  one at a time and require `0002` to refuse each, including three that gut the depth cap while
+  hiding the phrases the drift check looks for in a line comment, a block comment and a string
+  literal. The runtime cases prove, against a real session, that a
+  non-administrator cannot create a category or an entry, that their delete and rename affect **zero
+  rows** rather than erroring, that both directions of the depth cap refuse, and that deleting a
+  category holding entries or subcategories refuses. Two positive controls prove an administrator
+  still can — so a revoked grant turns the suite red instead of green, which was verified by
+  revoking it. `npm run lint && npx tsc --noEmit && npm test` clean (**189 tests**), production
+  build clean.
+
+  **Not yet exercised in a browser** against a live Supabase project — the local mirror has no
+  PostgREST, so the screen's own round trips are covered by types and unit tests rather than by use.
+
+- **A way to add someone.** `2026-08-26` `/admin/access` → **Add person** creates the account and
+  shows a one-time sign-in link to hand over. No email provider was added and none is needed — the
+  link is generated by Supabase's admin API, which returns it without sending anything.
+  `0004_admin_write_paths.sql` carries the database half; three routes under `/api/admin/` carry
+  the privileged half.
+
+  **Checked:** the migration chain 0001→0004 applied clean on a throwaway PostgreSQL 17 cluster and
+  re-applied idempotently; `boundary_mutations.sh` ran **97/97 mutation cases, 8/8 runtime cases
+  (PART 12) and 4/4 migration cases (PART 13)** green, including a real signed-in non-administrator
+  being refused when inserting their own `auth.uid()` into `basecamp.super_admins`;
+  `npm run lint && npx tsc --noEmit && npm test` clean (**172 tests**).
+  **Not yet checked against a live Supabase project** — the link flow depends on GoTrue's
+  `generateLink`, which the local stub does not implement, so walk one person through it end to end
+  before onboarding anybody.
+
+- **A screen for adding and removing administrators.** `2026-08-26` The ⋮ menu on each roster row
+  promotes and demotes. No route: `0004` granted `authenticated` the INSERT/DELETE privileges whose
+  policies `0001` already had, so it is an ordinary RLS-decided write from the browser on the
+  administrator's own token.
+
+  **Checked:** the four refusals that matter were exercised against a real session in
+  `boundary_mutations.sh` PART 12 — a non-administrator cannot promote themselves, cannot promote
+  anyone else, cannot delete an existing administrator, and even a legitimate administrator cannot
+  delete the last one.
 
 <!-- template issues.md v1.0.0 -->

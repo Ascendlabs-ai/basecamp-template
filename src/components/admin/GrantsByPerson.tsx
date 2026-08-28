@@ -59,8 +59,8 @@ export default function GrantsByPerson({
   pending,
   onToggle,
   onAssign,
-  onSendResetLink,
-  resetPending,
+  onIssueSignInLink,
+  linkPending,
 }: {
   person: Person;
   categories: GrantCategory[];
@@ -71,8 +71,8 @@ export default function GrantsByPerson({
   pending: Set<string>;
   onToggle: (userId: string, target: ToggleTarget) => void;
   onAssign: (userId: string, typeId: string | null, department: string | null) => void;
-  onSendResetLink: (person: Person) => void;
-  resetPending: boolean;
+  onIssueSignInLink: (person: Person) => void;
+  linkPending: boolean;
 }) {
   const member = memberIndex.get(person.id);
   const memberPending = pending.has(memberKey(person.id));
@@ -133,26 +133,29 @@ export default function GrantsByPerson({
             </Typography>
           </Box>
 
-          {/* Triggers the PUBLIC recovery email. No password is set, seen or
-              reset here — the person who owns the mailbox does that. There is
-              deliberately no "change password" or "disable account" control:
-              both would need the admin API, which this app has no key for. */}
+          {/* Generates a one-time sign-in link and shows it for the
+              administrator to hand over. NOTHING IS EMAILED — that is the whole
+              point of the flow, so this control must not say "send". No
+              password is set or seen here; the person chooses their own at the
+              other end of the link. Suspending an account lives in the roster's
+              ⋮ menu rather than here, so the destructive control is not beside
+              the routine one. */}
           <Button
             variant="outlined"
             size="small"
-            disabled={resetPending}
-            onClick={() => onSendResetLink(person)}
-            startIcon={resetPending ? <CircularProgress size={14} color="inherit" /> : null}
+            disabled={linkPending}
+            onClick={() => onIssueSignInLink(person)}
+            startIcon={linkPending ? <CircularProgress size={14} color="inherit" /> : null}
             sx={{ flexShrink: 0, cursor: "pointer" }}
           >
-            {resetPending ? "Sending…" : "Send password link"}
+            {linkPending ? "Issuing…" : "Issue sign-in link"}
           </Button>
         </Stack>
 
         {person.is_super_admin ? (
           <Typography variant="caption" sx={{ display: "block", color: "text.secondary", mt: 1.25 }}>
-            This person is an administrator. Administrators are added and removed in
-            SQL, not here — the grants below do not affect that.
+            This person is an administrator, so they can see everything regardless of the grants
+            below. Use the ⋮ menu beside their name in the roster to change that.
           </Typography>
         ) : null}
       </Paper>

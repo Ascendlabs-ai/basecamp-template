@@ -2,13 +2,19 @@
 
 import { useMemo, useState } from "react";
 
+import MoreVertRoundedIcon from "@mui/icons-material/MoreVertRounded";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import Box from "@mui/material/Box";
+import IconButton from "@mui/material/IconButton";
 import InputAdornment from "@mui/material/InputAdornment";
+import ListItemText from "@mui/material/ListItemText";
+import Menu from "@mui/material/Menu";
+import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
+import { adminRoleKey, banKey, isBanned, signInLinkKey } from "@/lib/adminAccess";
 import type { Member, MemberType, Person } from "@/types/admin";
 
 import PersonAvatar from "./PersonAvatar";
@@ -38,16 +44,50 @@ export default function PersonList({
   counts,
   members,
   typeById,
+  currentUserId,
+  pending,
   onSelect,
+  onReissueLink,
+  onSetAdmin,
+  onSetBanned,
 }: {
   people: Person[];
   selectedId: string;
   counts: Map<string, number>;
   members: Map<string, Member>;
   typeById: Map<string, MemberType>;
+  /** Whose session this is — used to refuse self-destructive actions. */
+  currentUserId: string;
+  pending: Set<string>;
   onSelect: (id: string) => void;
+  onReissueLink: (person: Person) => void;
+  onSetAdmin: (person: Person, isAdmin: boolean) => void;
+  onSetBanned: (person: Person, banned: boolean) => void;
 }) {
   const [filter, setFilter] = useState("");
+  // Which row's overflow menu is open, and where to anchor it. One at a time,
+  // so a single pair of state slots rather than per-row state.
+  const [menuFor, setMenuFor] = useState<Person | null>(null);
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+
+  function closeMenu() {
+    setMenuFor(null);
+    setAnchor(null);
+  }
+
+  // Named once, above the tree. An earlier version wrapped the menu body in an
+  // inline lambda purely to narrow `menuFor`, which a plain ternary does just as
+  // well — and having nowhere to name the derived values meant `isBanned` ran
+  // four times and the self-check three times per render.
+  const target = menuFor;
+  const targetIsSelf = target?.id === currentUserId;
+  const targetBanned = target ? isBanned(target) : false;
+
+  /** Run a row action and close the menu — every item does both. */
+  function act(run: () => void) {
+    run();
+    closeMenu();
+  }
 
   const shown = useMemo(() => {
     const needle = filter.trim().toLowerCase();
@@ -112,7 +152,14 @@ export default function PersonList({
           const isSelected = p.id === selectedId;
           const count = counts.get(p.id) ?? 0;
           const member = members.get(p.id);
-          const typeName = member ? (typeById.get(member.member_type_id)?.name ?? "Unknown type") : null;
+          // The ROSTER is the source of truth for which type someone holds —
+          // `list_people()` reads it in the same query as the rest of this row,
+          // so a person added a moment ago shows their type as soon as the
+          // roster refreshes, without waiting for the separately-fetched
+          // members index to catch up. `members` is still consulted for the
+          // department, which only it carries.
+          const typeId = p.member_type_id ?? member?.member_type_id ?? null;
+          const typeName = typeId ? (typeById.get(typeId)?.name ?? "Unknown type") : null;
           // "Staff · Marketing", or just the type when there is no department.
           const subLabel = typeName
             ? [typeName, member?.department].filter(Boolean).join(" · ")
@@ -131,8 +178,13 @@ export default function PersonList({
             day: "numeric",
             timeZone: "UTC",
           });
+          const banned = isBanned(p);
           return (
-            <Box component="li" key={p.id}>
+            <Box
+              component="li"
+              key={p.id}
+              sx={{ display: "flex", alignItems: "center", gap: 0.25 }}
+            >
               <Box
                 component="button"
                 type="button"
@@ -142,7 +194,9 @@ export default function PersonList({
                 // reader announced "someone@… 12" and never said 12 of what.
                 aria-label={`${p.email}, ${subLabel}, joined ${joined}${
                   p.is_super_admin ? ", administrator" : ""
-                }, ${count} ${count === 1 ? "entry" : "entries"} visible`}
+                }${banned ? ", suspended" : ""}, ${count} ${
+                  count === 1 ? "entry" : "entries"
+                } visible`}
                 sx={(theme) => ({
                   width: "100%",
                   display: "flex",
@@ -157,6 +211,11 @@ export default function PersonList({
                   font: "inherit",
                   cursor: "pointer",
                   backgroundColor: isSelected ? theme.palette.celestial.light : "transparent",
+                  // Dimmed, not hidden. A suspended person is still on the
+                  // roster and still holds their grants — that is what makes
+                  // the suspension reversible — so the row has to stay
+                  // readable while looking inactive.
+                  opacity: banned ? 0.55 : 1,
                   transition: theme.transitions.create(["background-color"], { duration: 150 }),
                   "&:hover": {
                     backgroundColor: isSelected
@@ -184,10 +243,11 @@ export default function PersonList({
                   >
                     {p.email}
                   </Typography>
-                  {/* Read-only. There is deliberately no control here that
-                      promotes or demotes: the trust root is changed by SQL, and
-                      showing the fact without offering to change it is the whole
-                      point of surfacing it. */}
+                  {/* The badge itself is read-only; promoting and demoting live
+                      in the ⋮ menu at the end of the row. Both write
+                      `basecamp.super_admins` directly on the administrator's own
+                      token — 0004 granted the privileges whose policies 0001
+                      already carried. */}
                   {p.is_super_admin ? (
                     <Box
                       component="span"
@@ -206,6 +266,27 @@ export default function PersonList({
                       })}
                     >
                       Admin
+                    </Box>
+                  ) : null}
+                  {banned ? (
+                    <Box
+                      component="span"
+                      sx={(t) => ({
+                        display: "inline-block",
+                        mt: 0.25,
+                        ml: p.is_super_admin ? 0.5 : 0,
+                        px: 0.75,
+                        py: "1px",
+                        borderRadius: 50,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        letterSpacing: "0.3px",
+                        textTransform: "uppercase",
+                        color: t.palette.error.dark,
+                        backgroundColor: t.palette.error.light,
+                      })}
+                    >
+                      Suspended
                     </Box>
                   ) : null}
                   {/* The design's type · department line. aria-hidden because
@@ -239,6 +320,28 @@ export default function PersonList({
                   {count}
                 </Typography>
               </Box>
+
+              {/* OUTSIDE the row button, not inside it. A <button> inside a
+                  <button> is invalid HTML and browsers recover from it by
+                  hoisting the inner one out, which drops its click handler —
+                  the menu would render and do nothing. */}
+              {/* No Tooltip. Its title was a verbatim copy of the aria-label
+                  below, so it told a sighted user nothing the accessible name
+                  did not already carry — while mounting one MUI Tooltip (a
+                  useId and four timers) per row of a list that grows with every
+                  account on the project. */}
+              <IconButton
+                size="small"
+                aria-label={`Actions for ${p.email}`}
+                aria-haspopup="menu"
+                onClick={(e) => {
+                  setMenuFor(p);
+                  setAnchor(e.currentTarget);
+                }}
+                sx={{ flexShrink: 0 }}
+              >
+                <MoreVertRoundedIcon sx={{ fontSize: 18 }} />
+              </IconButton>
             </Box>
           );
         })}
@@ -249,6 +352,72 @@ export default function PersonList({
           </Typography>
         ) : null}
       </Box>
+
+      {/* ONE menu for the whole list, re-anchored per row. Rendering a Menu
+          inside the map would mount as many Popper instances as there are
+          people, on a screen whose roster grows with every account on the
+          project. */}
+      <Menu anchorEl={anchor} open={menuFor !== null} onClose={closeMenu}>
+        {target
+          ? [
+              <MenuItem
+                key="link"
+                disabled={pending.has(signInLinkKey(target.id))}
+                onClick={() => act(() => onReissueLink(target))}
+              >
+                <ListItemText
+                  primary="Issue a sign-in link"
+                  secondary="For someone locked out. Nothing is emailed."
+                />
+              </MenuItem>,
+
+              <MenuItem
+                key="admin"
+                // NOT disabled for self. An earlier version was, with copy
+                // saying "You cannot change your own administrator status" —
+                // a claim nothing enforced, since anyone with devtools could
+                // issue the write. A UI that states a rule the database does
+                // not have is worse than one that explains the consequence, so
+                // the copy now says what actually happens. The catastrophic
+                // case IS enforced, by the last-administrator trigger.
+                disabled={pending.has(adminRoleKey(target.id))}
+                onClick={() => act(() => onSetAdmin(target, !target.is_super_admin))}
+              >
+                <ListItemText
+                  primary={
+                    target.is_super_admin ? "Remove as administrator" : "Make an administrator"
+                  }
+                  secondary={
+                    targetIsSelf && target.is_super_admin
+                      ? "This is you. You would lose the admin screens, and another administrator would have to restore you."
+                      : target.is_super_admin
+                        ? "They keep their access; they lose the admin screens."
+                        : "Full access to every entry and both admin screens."
+                  }
+                />
+              </MenuItem>,
+
+              <MenuItem
+                key="ban"
+                disabled={
+                  (targetIsSelf && !targetBanned) || pending.has(banKey(target.id))
+                }
+                onClick={() => act(() => onSetBanned(target, !targetBanned))}
+              >
+                <ListItemText
+                  primary={targetBanned ? "Restore sign-in" : "Suspend sign-in"}
+                  secondary={
+                    targetIsSelf && !targetBanned
+                      ? "You cannot suspend your own account."
+                      : targetBanned
+                        ? "They can sign in again with the access they already had."
+                        : "They keep their grants, so this can be undone."
+                  }
+                />
+              </MenuItem>,
+            ]
+          : null}
+      </Menu>
     </Paper>
   );
 }

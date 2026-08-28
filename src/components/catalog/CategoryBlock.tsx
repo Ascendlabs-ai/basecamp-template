@@ -63,10 +63,22 @@ function GroupLabel({ children }: { children: React.ReactNode }) {
 export default function CategoryBlock({
   category,
   lead = false,
+  nested = false,
   onOpenDetail,
 }: {
   category: CatalogCategory;
   lead?: boolean;
+  /**
+   * Renders as a subcategory of the block above it: indented, with a smaller
+   * heading and less space beneath.
+   *
+   * A PRESENTATION FLAG, not a structural one. The caller flattens the tree and
+   * decides the order; this only says how the block should look in it. That
+   * keeps the section landmark and its `aria-labelledby` identical at both
+   * depths, so a screen-reader user gets one predictable list of sections
+   * rather than a nested one they must navigate differently.
+   */
+  nested?: boolean;
   onOpenDetail: (entry: CatalogEntry) => void;
 }) {
   const reduceMotion = useReducedMotion();
@@ -100,9 +112,30 @@ export default function CategoryBlock({
   };
 
   return (
-    <Box component="section" sx={{ mb: { xs: 4.5, md: 6 } }} aria-labelledby={`cat-${category.slug}`}>
+    <Box
+      component="section"
+      sx={{
+        mb: nested ? { xs: 3, md: 4 } : { xs: 4.5, md: 6 },
+        ml: nested ? { xs: 0, md: 3 } : 0,
+        // A rule rather than an indent on small screens, where horizontal space
+        // is the scarce thing and 24px of it would squeeze the tiles.
+        pl: nested ? { xs: 1.5, md: 2 } : 0,
+        borderLeft: nested ? 2 : 0,
+        borderColor: "divider",
+      }}
+      aria-labelledby={`cat-${category.slug}`}
+    >
       <Stack direction="row" spacing={1.5} alignItems="baseline" sx={{ mb: 0.5, flexWrap: "wrap" }}>
-        <Typography id={`cat-${category.slug}`} variant="h5" component="h2" sx={{ fontWeight: 700 }}>
+        {/* `h3` when nested — the heading level follows the document outline,
+            because a screen-reader user navigating by heading is how the nesting
+            is actually perceived. `variant` follows separately: it is the visual
+            size and must not be what decides the outline. */}
+        <Typography
+          id={`cat-${category.slug}`}
+          variant={nested ? "h6" : "h5"}
+          component={nested ? "h3" : "h2"}
+          sx={{ fontWeight: 700 }}
+        >
           {category.name}
         </Typography>
         <Chip

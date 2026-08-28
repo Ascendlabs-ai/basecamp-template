@@ -97,7 +97,7 @@ export default async function CatalogAdminPage() {
     isSuperAdmin(),
     supabase
       .from("categories")
-      .select("id, slug, name, description, sort_order", { count: "exact" })
+      .select("id, slug, name, description, sort_order, parent_id", { count: "exact" })
       // (sort_order, slug) — sort_order is not unique and defaults to 0, so it
       // is not a total order on its own. The same pair the home page orders by,
       // and the same pair `inRenderOrder` reproduces on the client.

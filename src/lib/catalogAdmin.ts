@@ -148,6 +148,17 @@ export type Validated<T> = { ok: true; row: T } | { ok: false; message: string }
 export const DEFAULT_DESCRIPTION = "No description yet.";
 
 /**
+ * One sentence, two callers.
+ *
+ * `explainWriteError` returns it for a 23503 on an entry write; the catalog
+ * screen returns it for a parent that has vanished from local state before the
+ * write is attempted. Two copies of a user-facing string that must agree is the
+ * shape that drifts, and this one is the difference between "reload" and a
+ * silent retry loop.
+ */
+export const CATEGORY_VANISHED = "That category no longer exists. Reload the page and choose another.";
+
+/**
  * What the simple "add by URL" path fills in for the columns it does not ask
  * about.
  *
@@ -405,6 +416,66 @@ export function inRenderOrder<T extends Sortable>(rows: ReadonlyArray<T>): T[] {
 }
 
 /**
+ * Group a flat category list into the one-deep shape the screen renders.
+ *
+ * THE DEPTH CAP IS THE DATABASE'S, NOT THIS FUNCTION'S. `enforce_category_depth`
+ * in 0005 is what refuses a third level; this only arranges what came back. If
+ * the two ever disagree, the database is right — so a row whose parent is not in
+ * the list (a subcategory of a category this viewer cannot see) is rendered at
+ * top level rather than dropped. Dropping it would hide a row the person is
+ * entitled to, which is the worse direction to be wrong in.
+ *
+ * ONE QUALIFICATION on that. A row nested TWO deep — a grandchild — hangs off a
+ * child, and this shape only draws one level, so it is not rendered. That is
+ * unreachable while the cap holds, which is why it is left rather than
+ * special-cased; but the no-drop promise above is about an unresolvable PARENT,
+ * not about a tree the database should never have allowed to exist.
+ *
+ * Children are ordered by the same (sort_order, slug) pair as parents, because
+ * `sort_order` is not unique anywhere in this schema.
+ */
+export function categoryTree<T extends Sortable & { parent_id: string | null }>(
+  rows: ReadonlyArray<T>,
+): { category: T; children: T[] }[] {
+  const byId = new Set(rows.map((r) => r.id));
+  const childrenOf = new Map<string, T[]>();
+  const roots: T[] = [];
+
+  for (const row of rows) {
+    if (row.parent_id && byId.has(row.parent_id)) {
+      const siblings = childrenOf.get(row.parent_id);
+      if (siblings) siblings.push(row);
+      else childrenOf.set(row.parent_id, [row]);
+    } else {
+      roots.push(row);
+    }
+  }
+
+  return inRenderOrder(roots).map((category) => ({
+    category,
+    children: inRenderOrder(childrenOf.get(category.id) ?? []),
+  }));
+}
+
+/**
+ * Can this category take a subcategory?
+ *
+ * Guards the CREATE WRITE so the common mistake comes back as a sentence
+ * rather than a round trip. The authority is `enforce_category_depth`, which is
+ * what actually refuses.
+ *
+ * NOT used to filter the parent picker, deliberately: `categoryTree` already
+ * yields exactly the rows with no resolvable parent, and filtering there would
+ * drop a category whose parent is real but invisible to this viewer — which
+ * that function's contract says must be shown.
+ */
+export function canHoldChildren(category: { parent_id: string | null }): boolean {
+  return category.parent_id === null;
+}
+
+// ---------------------------------------------------------------------------
+
+/**
  * Move one row up or down, and return only the rows whose `sort_order` must
  * change.
  *
@@ -449,13 +520,12 @@ export function reorder<T extends Sortable>(
 
 // ---------------------------------------------------------------------------
 // In-flight keys
-// ---------------------------------------------------------------------------
 
 /**
  * The keys the Catalog screen claims while a write is in flight.
  *
  * ONE `Set` HOLDS ALL OF THEM, which is why every key is prefixed. That is the
- * lesson `adminAccess.ts` records at `resetKey`: without a prefix, two different
+ * lesson `adminAccess.ts` records at `signInLinkKey`: without a prefix, two different
  * operations on the same uuid claim the same slot and the second is silently
  * dropped as a duplicate. A category and an entry can share neither a prefix nor
  * an id space by accident here.
@@ -622,7 +692,10 @@ export function unsluggable(name: string): string {
  */
 export function explainWriteError(
   operation: "create-category" | "update-category" | "delete-category" | "create-entry" | "update-entry" | "delete-entry",
-  error: { code?: string } | null | undefined,
+  // `message` is declared rather than cast at the 23001 branch: every real
+  // PostgrestError carries it, and `describeError` in adminAccess.ts already
+  // takes the same shape.
+  error: { code?: string; message?: string } | null | undefined,
   context: { slug?: string } = {},
 ): string | null {
   const code = error?.code;
@@ -650,13 +723,40 @@ export function explainWriteError(
   // refusing on purpose, so say what to do about it rather than print a
   // constraint name at somebody.
   if (code === "23503" && operation === "delete-category") {
-    return "That category still has entries in it. Move them to another category, or delete them first.";
+    // TWO constraints answer with this code now: `entries.category_id` and
+    // `categories.parent_id`, both ON DELETE RESTRICT. PostgREST does not hand
+    // back which, so the message names both rather than guessing — and either
+    // way the instruction is the same: empty the container first.
+    return "That category still has something in it — entries, subcategories, or both. Move or delete them first.";
   }
 
   // 23503 on a create means the chosen category no longer exists — someone
   // deleted it in another tab between this page loading and this click.
-  if (code === "23503" && (operation === "create-entry" || operation === "update-entry")) {
-    return "That category no longer exists. Reload the page and choose another.";
+  // `create-category` joined this branch with nesting: the new `parent_id` FK
+  // fires when another administrator deletes the chosen parent mid-flight, and
+  // the depth-cap trigger raises `foreign_key_violation` deliberately for the
+  // same case. Without it that fell through to a bare "(23503)".
+  if (
+    code === "23503" &&
+    (operation === "create-entry" ||
+      operation === "update-entry" ||
+      operation === "create-category" ||
+      // `update-category` is the MOVE path: the parent chosen at render can be
+      // deleted by another administrator before the click lands.
+      operation === "update-category")
+  ) {
+    return CATEGORY_VANISHED;
+  }
+
+  // 23001 restrict_violation is `enforce_category_depth` refusing to build a
+  // tree deeper than the readers can render. The trigger's own message already
+  // says which direction was attempted and why, and it is written for a person
+  // — so it is passed through rather than replaced with a generic sentence.
+  if (code === "23001") {
+    // `||`, not `??`. An empty message would otherwise be returned verbatim,
+    // and `useAdminWrite` treats a falsy message as "no error to show" — a
+    // failed write with no snackbar at all.
+    return error?.message || "Categories can only be nested one level deep.";
   }
 
   // 23514 check_violation. `validateEntry` catches every CHECK it knows about

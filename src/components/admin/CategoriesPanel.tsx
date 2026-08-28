@@ -12,13 +12,19 @@ import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
 import IconButton from "@mui/material/IconButton";
+import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
-import { categoryKey, CREATE_CATEGORY_KEY, REORDER_CATEGORIES_KEY, inRenderOrder } from "@/lib/catalogAdmin";
+import {
+  categoryKey,
+  CREATE_CATEGORY_KEY,
+  REORDER_CATEGORIES_KEY,
+  categoryTree,
+} from "@/lib/catalogAdmin";
 import type { AdminCategory, AdminEntry } from "@/types/admin";
 import type { CategoryDraft } from "@/lib/catalogAdmin";
 
@@ -51,8 +57,13 @@ export default function CategoriesPanel({
   pending: Set<string>;
   /** True while a resync is in flight, so reorder controls stay unavailable. */
   isResyncing: boolean;
-  onCreate: (draft: CategoryDraft) => Promise<boolean>;
-  onUpdate: (id: string, draft: CategoryDraft) => Promise<boolean>;
+  onCreate: (draft: CategoryDraft, parentId: string | null) => Promise<boolean>;
+  /** `parentId` omitted leaves the parent alone; `null` makes it top level. */
+  onUpdate: (
+    id: string,
+    draft: CategoryDraft,
+    parentId?: string | null,
+  ) => Promise<boolean>;
   onMove: (id: string, direction: "up" | "down") => void;
   onRequestDelete: (id: string, label: string) => void;
 }) {
@@ -61,8 +72,53 @@ export default function CategoriesPanel({
   const [editDescription, setEditDescription] = useState("");
   const [newName, setNewName] = useState("");
   const [newDescription, setNewDescription] = useState("");
+  /** "" means top level. A uuid means "nest under this one". */
+  const [newParentId, setNewParentId] = useState("");
+  /** The same, for the row being edited — this is what makes a MOVE possible. */
+  const [editParentId, setEditParentId] = useState("");
 
-  const ordered = inRenderOrder(categories);
+  /**
+   * The tree, flattened back into rows the existing markup can render.
+   *
+   * ONE ROW SHAPE, not two. A separate nested `<ul>` would have meant a second
+   * copy of the rename form, the reorder arrows and the delete guard — four
+   * things that have each been got wrong once already in this file. `depth` is
+   * the only difference, and it only moves the row and changes its heading.
+   *
+   * `first`/`last` are computed WITHIN each sibling group, because that is the
+   * range the arrows move a row through: a subcategory cannot be moved past its
+   * own parent. `childCount` comes from the tree rather than from a per-row
+   * scan of `categories`, which was O(n²) and re-derived what the tree already
+   * knew.
+   */
+  const tree = categoryTree(categories);
+  const ordered = tree.flatMap(({ category, children }, i) => [
+    {
+      category,
+      depth: 0,
+      first: i === 0,
+      last: i === tree.length - 1,
+      childCount: children.length,
+    },
+    ...children.map((child, j) => ({
+      category: child,
+      depth: 1,
+      first: j === 0,
+      last: j === children.length - 1,
+      childCount: 0,
+    })),
+  ]);
+
+  /**
+   * What the "Sits under" picker offers.
+   *
+   * `tree` already holds exactly the rows with no resolvable parent, so no
+   * further filter is needed — and filtering by `canHoldChildren` here would
+   * have been worse than redundant: the only row it could drop is one whose
+   * parent is real but invisible to this viewer, which `categoryTree`'s own
+   * contract says must be SHOWN rather than hidden.
+   */
+  const parentOptions = tree.map((t) => t.category);
   const createPending = pending.has(CREATE_CATEGORY_KEY);
 
   /**
@@ -97,6 +153,7 @@ export default function CategoriesPanel({
     setEditingId(category.id);
     setEditName(category.name);
     setEditDescription(category.description);
+    setEditParentId(category.parent_id ?? "");
   }
 
   return (
@@ -116,12 +173,22 @@ export default function CategoriesPanel({
           </Typography>
         ) : (
           <Box component="ul" sx={{ listStyle: "none", m: 0, p: 0 }}>
-            {ordered.map((category, index) => {
+            {ordered.map(({ category, depth, first, last, childCount }) => {
               const count = entriesByCategory.get(category.id)?.length ?? 0;
               const busy = pending.has(categoryKey(category.id));
               const isEditing = editingId === category.id;
-              const first = index === 0;
-              const last = index === ordered.length - 1;
+              // A category cannot be deleted while it holds ANYTHING. Entries
+              // and subcategories both count, because the database refuses both
+              // and a button that looks available and then fails is worse than
+              // one that says why up front.
+              const holds = count + childCount;
+              // A container with tiles only in its children still renders on
+              // the home page — `category_or_child_has_grant` (0005) and
+              // `visibleCategories` both keep a parent whose children are
+              // visible. What it does NOT get is entries of its own, and an
+              // administrator who expected tiles here should be told rather
+              // than left to compare two screens.
+              const isEmptyContainer = depth === 0 && count === 0 && childCount > 0;
 
               return (
                 <Box
@@ -135,6 +202,11 @@ export default function CategoriesPanel({
                     py: 1.5,
                     mb: 1,
                     "&:last-of-type": { mb: 0 },
+                    // Indent, and a lighter border, so the nesting is legible
+                    // without a second list. `ml` rather than a wrapper keeps
+                    // the row markup identical at both depths.
+                    ml: depth === 1 ? { xs: 2, sm: 4 } : 0,
+                    borderStyle: depth === 1 ? "dashed" : "solid",
                   }}
                 >
                   {isEditing ? (
@@ -157,6 +229,36 @@ export default function CategoriesPanel({
                         fullWidth
                         helperText="Shown under the category heading on the home page."
                       />
+                      {/* MOVE. The database already guards this in both
+                          directions and passes its own refusal back as a
+                          sentence, so the only reason not to offer it was that
+                          nothing called the statement. A category with
+                          subcategories of its own cannot be moved under
+                          another — the trigger says so, and its options are
+                          filtered out here to say it first. */}
+                      <TextField
+                        select
+                        size="small"
+                        label="Sits under"
+                        value={editParentId}
+                        onChange={(e) => setEditParentId(e.target.value)}
+                        fullWidth
+                        helperText={
+                          childCount > 0
+                            ? "This category has subcategories of its own, so it cannot be moved under another."
+                            : "Categories go one level deep."
+                        }
+                        disabled={childCount > 0}
+                      >
+                        <MenuItem value="">Nothing — top-level category</MenuItem>
+                        {parentOptions
+                          .filter((p) => p.id !== category.id)
+                          .map((p) => (
+                            <MenuItem key={p.id} value={p.id}>
+                              {p.name}
+                            </MenuItem>
+                          ))}
+                      </TextField>
                       <Stack direction="row" spacing={1}>
                         {/* `aria-disabled` for the same reason as the create
                             button: it goes unavailable ON DISPATCH, so pressing
@@ -184,10 +286,11 @@ export default function CategoriesPanel({
                             // straight after dispatch would put a refusal in the
                             // snackbar with the typed text already gone, so the
                             // fix for a duplicate name is to retype it.
-                            void onUpdate(category.id, {
-                              name: editName,
-                              description: editDescription,
-                            }).then((saved) => {
+                            void onUpdate(
+                              category.id,
+                              { name: editName, description: editDescription },
+                              editParentId === "" ? null : editParentId,
+                            ).then((saved) => {
                               if (saved) closeEdit(category.id);
                             });
                           }}
@@ -225,7 +328,34 @@ export default function CategoriesPanel({
                               borderColor: "divider",
                             }}
                           />
+                          {childCount > 0 ? (
+                            <Chip
+                              size="small"
+                              label={`${childCount} ${childCount === 1 ? "subcategory" : "subcategories"}`}
+                              sx={{
+                                flexShrink: 0,
+                                fontSize: 10.5,
+                                backgroundColor: "background.default",
+                                border: 1,
+                                borderColor: "divider",
+                              }}
+                            />
+                          ) : null}
                         </Stack>
+                        {/* Said WHERE THE STATE IS CREATED. A container with no
+                            tiles of its own is a perfectly good arrangement —
+                            it renders, because the read path was widened for
+                            exactly this — but an administrator who expected to
+                            see tiles here should learn it on this screen rather
+                            than by comparing it against the home page. */}
+                        {isEmptyContainer ? (
+                          <Typography
+                            sx={{ fontSize: 11, color: "text.secondary", mt: 0.5, fontStyle: "italic" }}
+                          >
+                            No entries of its own — this is a grouping. Its subcategories hold the
+                            tiles.
+                          </Typography>
+                        ) : null}
                         <Typography
                           sx={{
                             fontSize: 11.5,
@@ -276,6 +406,11 @@ export default function CategoriesPanel({
                         aria-label={`Rename ${category.name}`}
                         ref={(node) => {
                           renameButtons.current.set(category.id, node);
+                          // React 19 ref cleanup. Without it unmount leaves an
+                          // `id -> null` entry behind and the map only grows.
+                          return () => {
+                            renameButtons.current.delete(category.id);
+                          };
                         }}
                         onClick={() => startEdit(category)}
                         sx={{ cursor: "pointer", color: "text.secondary" }}
@@ -290,21 +425,34 @@ export default function CategoriesPanel({
                           heard "Delete Sales, unavailable" with no reason. */}
                       <Tooltip
                         title={
-                          count > 0
-                            ? `${count} ${count === 1 ? "entry is" : "entries are"} in this category — move or delete them first`
-                            : `Delete ${category.name}`
+                          // The reason names WHAT is in the way, because
+                          // "cannot delete" without it sends people looking in
+                          // the wrong place — a category can now be blocked by
+                          // subcategories, by entries, or by both.
+                          holds === 0
+                            ? `Delete ${category.name}`
+                            : [
+                                count > 0
+                                  ? `${count} ${count === 1 ? "entry" : "entries"}`
+                                  : null,
+                                childCount > 0
+                                  ? `${childCount} ${childCount === 1 ? "subcategory" : "subcategories"}`
+                                  : null,
+                              ]
+                                .filter(Boolean)
+                                .join(" and ") + " still in this category — move or delete them first"
                         }
                       >
                         <IconButton
                           size="small"
                           aria-label={`Delete ${category.name}`}
-                          aria-disabled={count > 0 || busy}
+                          aria-disabled={holds > 0 || busy}
                           onClick={() => {
-                            if (count === 0 && !busy) onRequestDelete(category.id, category.name);
+                            if (holds === 0 && !busy) onRequestDelete(category.id, category.name);
                           }}
                           sx={{
-                            cursor: count > 0 ? "not-allowed" : "pointer",
-                            color: count > 0 ? "text.disabled" : "text.secondary",
+                            cursor: holds > 0 ? "not-allowed" : "pointer",
+                            color: holds > 0 ? "text.disabled" : "text.secondary",
                           }}
                         >
                           <DeleteOutlineRoundedIcon sx={{ fontSize: 16 }} />
@@ -335,6 +483,29 @@ export default function CategoriesPanel({
             placeholder="e.g. Finance"
             inputRef={nameField}
           />
+          {/* Only top-level categories are offered. A subcategory cannot take
+              children — the database refuses it in both directions — so listing
+              one here would be offering a choice that fails on submit. */}
+          <TextField
+            select
+            size="small"
+            label="Sits under"
+            value={newParentId}
+            onChange={(e) => setNewParentId(e.target.value)}
+            helperText={
+              parentOptions.length === 0
+                ? "Create a top-level category first to be able to nest under it."
+                : "Categories go one level deep."
+            }
+            disabled={parentOptions.length === 0}
+          >
+            <MenuItem value="">Nothing — this is a top-level category</MenuItem>
+            {parentOptions.map((c) => (
+              <MenuItem key={c.id} value={c.id}>
+                {c.name}
+              </MenuItem>
+            ))}
+          </TextField>
           <TextField
             size="small"
             label="Description"
@@ -358,10 +529,17 @@ export default function CategoriesPanel({
             aria-disabled={newName.trim() === "" || createPending}
             onClick={() => {
               if (newName.trim() === "" || createPending) return;
-              void onCreate({ name: newName, description: newDescription }).then((created) => {
+              void onCreate(
+                { name: newName, description: newDescription },
+                newParentId === "" ? null : newParentId,
+              ).then((created) => {
                 if (created) {
                   setNewName("");
                   setNewDescription("");
+                  // The parent is DELIBERATELY kept. Adding several
+                  // subcategories under the same parent is the common run, and
+                  // resetting it would make every one after the first silently
+                  // land at top level.
                   nameField.current?.focus();
                 }
               });

@@ -17,13 +17,11 @@ at your own Supabase project, and it is yours; nothing links back here.
 - **Access administration** at `/admin/access` — grant a person a single entry
   or a whole category, or grant a *type* of person (staff, contractor, client)
   a set of things once and assign people to it.
-- **A people roster** showing every account on the project, when it joined, and
-  whether it is an administrator — with **Send password link**, which triggers
-  Supabase's own recovery email so the person sets their own password at
-  `/auth/reset`. No administrator ever handles a password, and no service-role
-  key is involved. Read the email limits in
-  [`supabase/README.md`](supabase/README.md#email-built-in-only-and-it-will-not-carry-a-real-rollout)
-  before you rely on it.
+- **A people roster** showing every account on the project, when it joined,
+  whether it is suspended, and whether it is an administrator — with **Add
+  person**, which creates the account and hands you a one-time sign-in link to
+  pass on yourself. No administrator ever handles a password and nothing is
+  emailed; see [Adding people](#adding-people) below.
 - **An append-only audit log** at **Admin → Audit** — every grant and revoke,
   who did it and to whom, written by database triggers rather than by the app,
   so a change cannot be made without being recorded.
@@ -36,10 +34,24 @@ Worth understanding before you deploy, because it is unusual and it is the
 reason this app is safe to point at a shared database:
 
 **Everything is enforced by Postgres row-level security.** There is no
-server-side role check anywhere in the application, and no service_role key. A
-signed-in user's requests carry their own JWT, and the database returns only the
-rows their grants allow. If someone has no grants, they get an empty catalog —
-not a filtered one, an empty one.
+server-side role check anywhere in the application. A signed-in user's requests
+carry their own JWT, and the database returns only the rows their grants allow.
+If someone has no grants, they get an empty catalog — not a filtered one, an
+empty one.
+
+**There is exactly one privileged path, and it is narrow.** Creating a person's
+account cannot be expressed as a policy, because identities live in
+`auth.users`, a schema this app does not own. So three `/api/admin/*` routes —
+add a person, issue their sign-in link, suspend or restore them — use
+`SUPABASE_SERVICE_ROLE_KEY`. It is read in one function, only after Postgres has
+answered `basecamp.is_super_admin()` true for the caller's own token, and what
+it exposes is a facade of four verbs with pinned arguments rather than Supabase
+Auth itself: it cannot read or write a single `basecamp` table and cannot set a
+password, an email or a role. Every catalog row, grant, member type and audit
+entry is still decided by RLS on the signed-in person's own token.
+`.env.local.example` and `src/lib/supabase/admin.ts` both spell out the
+boundary; skip the key entirely and everything except those three actions works
+unchanged.
 
 Effective access is the **union** of two independent sources: what a person's
 member *type* is granted, and what that person is granted individually. Neither
@@ -61,12 +73,17 @@ Full provisioning instructions, including the first-administrator step, are in
 2. **Expose the `basecamp` schema to the Data API** (Integrations → Data API →
    Settings → Exposed schemas; older projects have it under Project Settings →
    API). Nothing works before this and the failure is opaque.
-3. Apply `supabase/migrations/0001_baseline.sql`, then `0002_security_boundary.sql`,
-   then optionally `0003_seed_categories.sql` for four starter categories.
+3. Apply the SQL files in order: `0001_baseline.sql`, `0002_security_boundary.sql`,
+   optionally `0003_seed_categories.sql` for four starter categories, then
+   `0004_admin_write_paths.sql` and `0005_category_nesting.sql`. Only `0003` is
+   optional — `0004` is what makes **Add person** work and what seeds the three
+   starter member types, and `0005` adds subcategories.
 4. Create your administrator account, then insert their trust-root row.
-5. `cp .env.local.example .env.local` and fill in the two values.
-6. `npm install && npm run dev`, sign in, confirm `/admin/access` renders.
-7. Build your catalog in **Admin → Catalog**.
+5. `cp .env.local.example .env.local` and fill in the values — two required, plus
+   `SUPABASE_SERVICE_ROLE_KEY` if you want to add people from the app.
+6. Add `/auth/confirm` and `/accept-invite` to the project's Redirect URLs.
+7. `npm install && npm run dev`, sign in, confirm `/admin/access` renders.
+8. Build your catalog in **Admin → Catalog**, and add your first person.
 
 ## Rebranding
 
@@ -115,15 +132,22 @@ asserts the boundary at apply time and refuses to commit if ownership, RLS,
 definer hardening, the trust root's privileges and guards, the audit table's
 append-only guards and writers, the schema's default privileges, view safety,
 the ACLs on the definer trigger functions, the bodies of the seven functions that
-decide access, or the policies that call them are wrong.
+decide access, or the policies that call them are wrong. `0004` and `0005` add
+their own assertions in the same style and each pins the function it ships — the
+audit writer and the nesting-aware read gate — bringing the total to nine bodies
+pinned once the whole chain is applied.
 
 Those assertions are mutation-tested, and **the test is in the box**:
 `supabase/tests/boundary_mutations.sh` breaks one thing at a time in a throwaway
-PostgreSQL 16 or 17 cluster and requires `0002` to refuse — 72 mutations plus a
-control that must commit, plus an Editor-path arm that pastes both files CRLF the way a
-client does. Nine cases expect a COMMIT and say so. Nothing about
-provisioning needs it; run it if you edit `0002`, or if you would rather see the
-proof than read about it.
+PostgreSQL 16 or 17 cluster and requires the file under test to refuse. It runs
+four arms, counted separately so a lost one cannot hide in a rolled-up total:
+the static `psql` arm, an Editor-path arm that pastes the whole migration chain
+CRLF the way a client does, a runtime arm that issues real statements as
+`authenticated` and requires the DATABASE to refuse them, and one that puts
+`0004` itself under test. A handful of cases expect a COMMIT and say why.
+Nothing about provisioning needs it; run it if you edit `0002`, `0004`, `0005`,
+a policy or a definer function — or if you would rather see the proof than read
+about it.
 
 It is a floor, not a clean bill of health: a review on 2026-08-17 defeated
 several of `0002`'s stated invariants with mutations the suite does not contain.
@@ -141,7 +165,98 @@ error).
 
 Next.js App Router (React Compiler enabled), React 19, TypeScript, MUI 7 with
 Emotion, Framer Motion, and Supabase Auth + Postgres. Deploys to Vercel with two
-environment variables and no other configuration.
+environment variables, plus `SUPABASE_SERVICE_ROLE_KEY` if you want to add
+people from the app, and no other configuration.
+
+## Building the catalog
+
+`/admin/catalog` is where the catalog is filled in, and everything on it is a
+write from your browser on your own token. **This screen has no server route and
+never touches the service-role key** — the privileged path described above is
+only the three account-lifecycle routes, and it cannot reach a `basecamp` table
+at all. What you can do here is decided by a Postgres policy, so the screen
+cannot offer you anything the database would refuse.
+
+- **Create a category.** Name it; the identifier is derived, so renaming later
+  is safe.
+- **Nest one level.** The "Sits under" picker on the new-category form makes it
+  a subcategory. Only top-level categories are offered, because **nesting is
+  capped at one level** — a cap enforced by the database
+  (`enforce_category_depth`, in `0005_category_nesting.sql`), not by the form.
+  The cap exists because every reader of this data assumes a fixed shape: the
+  home page, the access matrix and the grant model are all flat or one-deep, and
+  arbitrary depth would break each differently.
+- **Add entries as tiles**, in a top-level category or a subcategory — the
+  entry dialog lists both, indented.
+- **Reorder, rename, and move.** Arrows move a row among its own siblings, so a
+  subcategory cannot be moved past its parent. Editing a category also lets you
+  change what it sits under — including promoting a subcategory back to top
+  level. A category that has subcategories of its own cannot be moved under
+  another; the database refuses it and the picker says so first.
+- **Deleting refuses rather than cascading.** A category holding entries,
+  subcategories, or both cannot be deleted; the button says which is in the way.
+  Both foreign keys are `ON DELETE RESTRICT`, so this holds even against a
+  client that ignores the UI.
+
+**Grants do not inherit.** `category_has_grant()` is flat: granting somebody
+"Finance" grants them nothing about "Finance › Reports". Each category — parent
+or subcategory — is its own column in the access matrix, and subcategories are
+labelled with their parent there so two called "Reports" are distinguishable.
+
+**A category used only as a container renders fine.** If every tile lives in the
+subcategories and none in the parent, the parent still appears as a heading with
+its children beneath it — `0005` widened the read rule by exactly one level for
+this case. What has *not* changed is the protection it sits next to: a category
+with nothing visible inside it at all — no entries of its own and no granted
+subcategory — stays hidden, because otherwise a grant on an empty category would
+disclose its name and description to somebody with no access to anything in it.
+
+**A refused write never renders as a success.** RLS does not raise on UPDATE or
+DELETE — the policy filters the row away and PostgREST answers `204`, which
+reads as `{ error: null }`. Every mutation on this screen therefore asks for the
+affected rows back and treats zero as "that did not apply". This repo has
+shipped that bug twice; `supabase/tests/boundary_mutations.sh` PART 14 now
+checks the row count for exactly this reason.
+
+## Adding people
+
+`/admin/access` → **Add person**. Enter their email, pick their type, and the
+app creates the account and shows you a **one-time sign-in link**. Copy it and
+send it to them however you already talk to them — a chat message, a text, in
+person.
+
+**Nothing is emailed.** The link is generated, not delivered: there is no mail
+provider here and none is needed. That is also why the link is shown exactly
+once and never stored — it is a credential, so it is never written to the audit
+log, a server log, or an error message.
+
+The link takes them to `/auth/confirm`, which renders a button and verifies
+nothing until they click it. That deliberate click matters: the token is
+single-use, so a link preview, a mail scanner or a browser prefetch would
+otherwise consume it and the recipient would be told their brand-new link had
+expired.
+
+Each person's ⋮ menu on the roster also offers:
+
+- **Issue a sign-in link** — for someone locked out or who never used the first
+  one. Same flow, nothing emailed.
+- **Make / remove an administrator** — writes `basecamp.super_admins` directly
+  from the browser on your own token. The database refuses a non-administrator,
+  and refuses the demotion that would leave nobody.
+- **Suspend / restore sign-in** — bans the auth account. It touches **no
+  grants**, which is what makes it reversible: restoring someone returns them to
+  exactly the access they had. A session they already have open stays valid for
+  up to an hour, so for an urgent case revoke their grants as well, which RLS
+  applies on the very next request.
+
+Removing someone permanently is not a button. Suspension is reversible and keeps
+their audit history readable; a genuine data-removal request is a deliberate
+manual act, not a click.
+
+**One-time setup:** this needs `SUPABASE_SERVICE_ROLE_KEY` in `.env.local` (see
+`.env.local.example` for what it is bounded to and why it carries no
+`NEXT_PUBLIC_` prefix), and `/auth/confirm` and `/accept-invite` added to the
+project's redirect allow-list — `issues.md` → Pending Manual Steps has both.
 
 ## What is deliberately not here
 
@@ -151,6 +266,11 @@ environment variables and no other configuration.
   entries are seeded; the schema is still the deliverable.
   `supabase/seed.example.sql` is a separate, fuller worked example you can run
   and then delete — it is not applied for you.
+
+  The one exception is **member types**. `0004` seeds three — staff, contractor,
+  client — and marks them `is_system` so they cannot be deleted, because **Add
+  person** requires a type and a database with none ships a screen that cannot
+  be used. Rename them freely; grants attach to the row, not the label.
 - **No signup screen — which is not the same as signup being off.** This app
   ships no way to register through it, and the sign-in page says accounts are
   issued by an administrator. That is true of the app; it is *not* true of the
@@ -158,16 +278,21 @@ environment variables and no other configuration.
   sign up arrive with zero access until an administrator grants them something,
   which is the intended model — but if you want the sign-in copy to be literally
   true, turn signup off in Authentication → Providers → Email.
-- **No invite flow.** Adding a user means creating the account in the Supabase
-  dashboard, granting them access in `/admin/access`, and sending them a
-  password link from the roster. There is no single "invite" action, and the
-  password link runs on Supabase's built-in email service until you attach your
-  own SMTP — see the email section in `supabase/README.md`, which you should
-  read before onboarding anyone.
 - **No email provider.** No SendGrid, Mailgun, Postmark, Resend, nodemailer or
   SMTP credentials anywhere in this repository, and no mail dependency in
-  `package.json`.
-- **No admin panel for the trust root.** Adding or removing an administrator is
-  a SQL statement, documented in `supabase/README.md`. The policies for a UI are
-  written and correct; the privileges are deliberately withheld until something
-  consumes them.
+  `package.json`. This is the constraint the onboarding flow is built around,
+  not a gap in it.
+- **No self-service password reset, and this is a decision.** Earlier versions
+  shipped a `/auth/reset` page fed by Supabase's own recovery email. Both are
+  gone. The reason is that the emailed route has two dashboard settings that
+  fail *silently* when wrong — the Site URL and the Redirect allow-list — on top
+  of a built-in mailer capped at a handful of messages an hour, so the button
+  reported success whether or not anything was delivered. **Issue a sign-in
+  link** replaces it and is strictly better for an app with no mail provider:
+  the administrator sees the link appear or sees why it did not, and the
+  recipient can open it in any browser. What it costs is real and worth saying:
+  somebody who forgets their password has to ask an administrator rather than
+  helping themselves. If you would rather have the self-service form back, the
+  receiver it needs is a page that consumes a fragment callback on an
+  implicit-flow client — `/auth/confirm` is the nearest working example — and
+  you would be taking on those two silent failure modes deliberately.

@@ -57,7 +57,7 @@ export default async function HomePage({
   const [{ data, error, count }, entryCountRes, role] = await Promise.all([
     supabase
       .from("categories")
-      .select(`id, slug, name, description, sort_order, entries(${ENTRY_COLUMNS})`, {
+      .select(`id, slug, name, description, sort_order, parent_id, entries(${ENTRY_COLUMNS})`, {
         count: "exact",
       })
       // (sort_order, slug), not sort_order alone. sort_order is NOT unique and

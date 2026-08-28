@@ -77,14 +77,24 @@ export function deleteTypeKey(typeId: string): string {
 }
 
 /**
- * In-flight key for "send this person a password link".
+ * In-flight key for "issue this person a sign-in link".
+ *
+ * Named `resetKey` when the action mailed a password-reset link. It now
+ * generates a link and mails nothing, so the old name described a feature that
+ * no longer exists — the kind of stale name that makes a reader look for a
+ * mailer.
+ *
+ * The VALUE was renamed with it. Leaving the prefix as `reset:` would have kept
+ * the stale word in the one place a reader actually greps — the key itself —
+ * while the function name claimed otherwise. Nothing persists these keys; the
+ * Set lives for the lifetime of the screen, so the value is free to change.
  *
  * Prefixed like the others because all of these share ONE pending Set: without
- * the prefix a reset for user X and a grant to user X would claim the same slot,
- * and the second would be dropped as a duplicate.
+ * the prefix, issuing a link to user X and granting something to user X would
+ * claim the same slot, and the second would be dropped as a duplicate.
  */
-export function resetKey(userId: string): string {
-  return `reset:${userId}`;
+export function signInLinkKey(userId: string): string {
+  return `sign-in-link:${userId}`;
 }
 
 /**
@@ -95,6 +105,75 @@ export function resetKey(userId: string): string {
  * one type can be created at a time, so a constant is also simply correct.
  */
 export const CREATE_TYPE_KEY = "create-type";
+
+/**
+ * In-flight keys for the account-lifecycle actions, all sharing the one pending
+ * Set for the reason `signInLinkKey` gives — the prefix is what stops a ban and a
+ * grant on the same person claiming the same slot.
+ */
+export function adminRoleKey(userId: string): string {
+  return `admin-role:${userId}`;
+}
+
+export function banKey(userId: string): string {
+  return `ban:${userId}`;
+}
+
+/** A constant, for the same reason CREATE_TYPE_KEY is: one at a time. */
+export const ADD_PERSON_KEY = "add-person";
+
+/**
+ * Is this person's sign-in currently suspended?
+ *
+ * THE COMPARISON IS THE POINT. `banned_until` is not cleared when a ban lapses
+ * — GoTrue leaves the past timestamp in place — so a truthiness test reports
+ * someone as banned forever after their first temporary suspension. This app
+ * only ever writes the hundred-year duration, so that case does not arise from
+ * these screens; it arises from a ban set by hand in the Supabase dashboard,
+ * which is exactly the case the roster has to render correctly.
+ */
+export function isBanned(person: { banned_until: string | null }): boolean {
+  if (!person.banned_until) return false;
+  const until = Date.parse(person.banned_until);
+  return Number.isFinite(until) && until > Date.now();
+}
+
+/**
+ * Turn the database's refusals on the trust root into something readable.
+ *
+ * Both of these are deliberate guards, not faults, and both surface as raw
+ * SQLSTATE text that means nothing to the person who clicked. `23001` /
+ * `restrict_violation` is the last-administrator trigger; `42501` is RLS
+ * refusing the write outright. (Not `2F003` — that is
+ * `prohibited_sql_statement_attempted`, and naming it here is the bug the
+ * inline comment below records having fixed in the code while this paragraph
+ * kept the wrong number.)
+ *
+ * Returns null when the error is not one of the recognised guards, so the
+ * caller falls through to its ordinary `failedWrite` message rather than
+ * inventing an explanation for something else.
+ */
+export function describeTrustRootRefusal(
+  error: { code?: string; message?: string } | null,
+): string | null {
+  if (!error) return null;
+  const message = (error.message ?? "").toLowerCase();
+  if (message.includes("last super_admin") || message.includes("last administrator")) {
+    return "That is the last administrator. Make someone else an administrator first, then remove this one.";
+  }
+  // 23001 is `restrict_violation`, which is what the last-admin trigger raises.
+  // An earlier version wrote 2F003 — that is
+  // `prohibited_sql_statement_attempted`, so the branch was dead and the guard
+  // was recognised only by its English message. `deleteType` in catalogAdmin.ts
+  // already had this right.
+  if (error.code === "23001" || error.code === "P0001") {
+    return "The database refused that change to the administrator list.";
+  }
+  if (error.code === "42501") {
+    return "You do not have permission to change the administrator list.";
+  }
+  return null;
+}
 
 /**
  * Index grants by (user, target) for O(1) lookup while rendering a matrix that
@@ -143,6 +222,36 @@ export function describeError(error: { code?: string; message?: string } | null)
   if (!error) return "unknown error";
   if (error.code) return error.code;
   return "network error";
+}
+
+/**
+ * How a category is named on the grant screens.
+ *
+ * A subcategory is prefixed with its parent — "Finance › Reports" — because
+ * only `slug` is unique in this schema. `uniqueSlug` dedupes slugs, not names,
+ * so two subcategories genuinely can both be called "Reports", and the matrix
+ * is the one screen where picking the wrong one grants the wrong people the
+ * wrong thing.
+ *
+ * GRANTS DO NOT INHERIT. `category_has_grant()` is flat, so granting "Finance"
+ * grants nothing about "Finance › Reports".
+ *
+ * The breadcrumb is chosen for DISAMBIGUATION, and it is worth being honest
+ * that it works against the other goal: a breadcrumb is the rendering that most
+ * implies containment. Disambiguation wins because two identically-named
+ * subcategories are a wrong-grant waiting to happen, and containment is
+ * corrected in words — the matrix's column filter states the rule beneath it.
+ *
+ * A parent that is not in the list (one this viewer cannot see) yields the bare
+ * name rather than a dangling separator.
+ */
+export function categoryLabel(
+  category: { name: string; parent_id: string | null },
+  byId: ReadonlyMap<string, { name: string }>,
+): string {
+  if (!category.parent_id) return category.name;
+  const parent = byId.get(category.parent_id);
+  return parent ? `${parent.name} \u203A ${category.name}` : category.name;
 }
 
 /**

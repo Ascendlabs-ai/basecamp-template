@@ -10,21 +10,23 @@ import {
   ENTRY_STATUSES,
   ENTRY_TYPES,
   SLUG_FORMAT_SOURCE,
-  URL_FORMAT_SOURCE,
-  URL_MAX_LENGTH,
   SLUG_MAX_LENGTH,
   TRIGGER_TYPES,
+  URL_FORMAT_SOURCE,
+  URL_MAX_LENGTH,
+  canHoldChildren,
+  categoryTree,
   enumLabel,
   explainWriteError,
-  unsluggable,
-  withCurrent,
   inRenderOrder,
   isValidSlug,
   nextSortOrder,
   reorder,
   slugify,
   uniqueSlug,
+  unsluggable,
   validateEntry,
+  withCurrent,
   type EntryDraft,
 } from "./catalogAdmin.ts";
 import { NAV_GROUP_ORDER } from "../types/admin.ts";
@@ -476,7 +478,11 @@ test("a duplicate identifier names the identifier and what to do", () => {
 
 test("the RESTRICT on a category delete becomes an instruction, not a constraint name", () => {
   const got = explainWriteError("delete-category", { code: "23503" });
-  assert.match(got!, /still has entries/i);
+  // TWO constraints now answer 23503 on this operation — entries.category_id
+  // and categories.parent_id, both ON DELETE RESTRICT — and PostgREST does not
+  // say which. The message names both rather than guessing one.
+  assert.match(got!, /entries/i);
+  assert.match(got!, /subcategor/i);
   assert.doesNotMatch(got!, /23503|fkey|constraint/i);
 });
 
@@ -559,4 +565,93 @@ test("unsluggable does not tell a non-ASCII name it has no letters", () => {
   const got = unsluggable("日本語");
   assert.doesNotMatch(got, /no letters/i);
   assert.match(got, /a–z and 0–9/);
+});
+
+// ---------------------------------------------------------------------------
+// Category nesting (0005)
+// ---------------------------------------------------------------------------
+
+/** A category as the tree helper needs it. */
+function cat(
+  id: string,
+  slug: string,
+  sort_order: number,
+  parent_id: string | null = null,
+) {
+  return { id, slug, sort_order, parent_id };
+}
+
+test("a flat list with no parents comes back as all roots, in render order", () => {
+  const tree = categoryTree([cat("b", "beta", 20), cat("a", "alpha", 10)]);
+  assert.deepEqual(
+    tree.map((t) => t.category.slug),
+    ["alpha", "beta"],
+  );
+  assert.deepEqual(tree.map((t) => t.children.length), [0, 0]);
+});
+
+test("children are nested under their parent and ordered the same way", () => {
+  const tree = categoryTree([
+    cat("p", "parent", 10),
+    cat("c2", "child-b", 20, "p"),
+    cat("c1", "child-a", 10, "p"),
+  ]);
+  assert.equal(tree.length, 1);
+  assert.deepEqual(
+    tree[0].children.map((c) => c.slug),
+    ["child-a", "child-b"],
+  );
+});
+
+test("sort_order ties break on slug, for children as well as parents", () => {
+  // sort_order is not unique anywhere in this schema and defaults to 0, so it
+  // is not a total order on its own — two rows landing on 0 must still render
+  // in a stable sequence.
+  const tree = categoryTree([
+    cat("p", "parent", 0),
+    cat("c2", "zulu", 0, "p"),
+    cat("c1", "alpha", 0, "p"),
+  ]);
+  assert.deepEqual(tree[0].children.map((c) => c.slug), ["alpha", "zulu"]);
+});
+
+test("a child whose parent is not in the list renders at top level, not dropped", () => {
+  // Reachable for real: a subcategory the viewer is granted, under a parent
+  // they are not. Dropping it would hide a row the person is entitled to see,
+  // which is the worse direction to be wrong in.
+  const tree = categoryTree([cat("orphan", "orphan", 10, "missing-parent")]);
+  assert.equal(tree.length, 1);
+  assert.equal(tree[0].category.slug, "orphan");
+});
+
+test("categoryTree never recurses past one level, even if the data says otherwise", () => {
+  // The database refuses a third level, but this function must not be the thing
+  // that assumes it. A grandchild is attached to its own parent and that parent
+  // is itself a child — so the grandchild appears exactly once, under it.
+  const tree = categoryTree([
+    cat("a", "a", 10),
+    cat("b", "b", 10, "a"),
+    cat("c", "c", 10, "b"),
+  ]);
+  assert.equal(tree.length, 1);
+  assert.deepEqual(tree[0].children.map((c) => c.slug), ["b"]);
+  // `c` is not rendered at top level and not lost — it hangs off `b`, which
+  // this one-deep shape does not draw. The database is what stops it existing.
+  assert.equal(tree.flatMap((t) => t.children).some((c) => c.slug === "c"), false);
+});
+
+test("only a top-level category can take children", () => {
+  assert.equal(canHoldChildren({ parent_id: null }), true);
+  assert.equal(canHoldChildren({ parent_id: "someone" }), false);
+});
+
+test("the depth cap's own message is passed through, not replaced", () => {
+  // The trigger writes for a person and says which direction was attempted.
+  // Replacing it with a generic sentence would lose the half that helps.
+  const got = explainWriteError("create-category", {
+    code: "23001",
+    message: 'cannot nest "Deep" under a subcategory — categories go one level deep',
+  } as { code: string });
+  assert.match(got!, /one level deep/i);
+  assert.doesNotMatch(got!, /23001/);
 });

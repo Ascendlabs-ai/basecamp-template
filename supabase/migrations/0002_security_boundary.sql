@@ -116,6 +116,9 @@ do $$
 declare
   n integer; detail text := '';
   bad record;
+  -- The depth cap's body with every hiding place stripped. See D20.
+  depth_body text;
+  depth_upward text;
 begin
   -- Every basecamp table: postgres-owned, RLS on, FORCE off (FORCE would make
   -- the definer helpers recurse against their own policies).
@@ -178,11 +181,36 @@ begin
   -- no UPDATE policy and no BEFORE UPDATE trigger on super_admins, so one
   -- statement could reassign the roster without changing the row count — which
   -- means the last-row guard would never fire.
-  if has_any_column_privilege('authenticated', 'basecamp.super_admins', 'insert')
-     or has_any_column_privilege('authenticated', 'basecamp.super_admins', 'update')
-     or has_table_privilege('authenticated', 'basecamp.super_admins', 'delete')
+  --
+  -- INSERT and DELETE ARE NOW EXPECTED, and 0004 is what grants them: the admin
+  -- screen promotes and demotes administrators on the caller's own token, which
+  -- is the pattern CLAUDE.md requires — a policy, not a check in TypeScript.
+  -- What still may not exist is UPDATE or TRUNCATE. That asymmetry is the whole
+  -- point: INSERT and DELETE each change the row COUNT, so the last-row guard
+  -- sees them; UPDATE does not, and TRUNCATE skips row triggers entirely.
+  --
+  -- The privilege alone is not the safety property — the INSERT policy's
+  -- WITH CHECK is, because it gates on the CALLER rather than the row. That is
+  -- asserted separately below, and exercised for real by
+  -- supabase/tests/boundary_mutations.sh.
+  if has_any_column_privilege('authenticated', 'basecamp.super_admins', 'update')
      or has_table_privilege('authenticated', 'basecamp.super_admins', 'truncate') then
-    raise exception 'authenticated holds a WRITE privilege on the trust root';
+    raise exception 'authenticated holds UPDATE or TRUNCATE on the trust root — the last-row guard can be bypassed';
+  end if;
+  if not exists (select 1 from pg_policies
+                  where schemaname = 'basecamp' and tablename = 'super_admins'
+                    and cmd = 'INSERT' and with_check like '%is_super_admin()%') then
+    raise exception 'the super_admins INSERT policy no longer gates on is_super_admin() — a non-admin could promote themselves';
+  end if;
+  if not exists (select 1 from pg_policies
+                  where schemaname = 'basecamp' and tablename = 'super_admins'
+                    and cmd = 'DELETE' and qual like '%is_super_admin()%') then
+    raise exception 'the super_admins DELETE policy no longer gates on is_super_admin()';
+  end if;
+  if exists (select 1 from pg_policies
+              where schemaname = 'basecamp' and tablename = 'super_admins'
+                and cmd in ('UPDATE','ALL')) then
+    raise exception 'an UPDATE-capable policy appeared on the trust root';
   end if;
   if has_table_privilege('service_role', 'basecamp.super_admins', 'truncate')
      or has_any_column_privilege('service_role', 'basecamp.super_admins', 'update') then
@@ -321,6 +349,23 @@ begin
                 and p.proname in ('is_super_admin','list_people','log_access_change',
                                   'prevent_access_truncate','prevent_audit_mutation',
                                   'prevent_last_super_admin_delete','prevent_super_admins_truncate',
+                                  -- Added by 0004. It writes the audit log past
+                                  -- that table's RLS; as an INVOKER it would
+                                  -- silently record nothing, since no client
+                                  -- role holds INSERT there.
+                                  'log_privileged_action',
+                                  -- Added by 0005. It reads basecamp.categories
+                                  -- to answer a question about a row OTHER than
+                                  -- the one being written; as an INVOKER it
+                                  -- would read through the writer's own RLS and
+                                  -- the depth cap would depend on what that
+                                  -- person happens to be able to see.
+                                  'enforce_category_depth',
+                                  -- Added by 0005. It reads basecamp.categories
+                                  -- from inside that table's own SELECT policy;
+                                  -- as an INVOKER it would recurse against the
+                                  -- policy that calls it.
+                                  'category_or_child_has_grant',
                                   -- The five that were missing. PROVEN: flipping
                                   -- has_grant to INVOKER passed this check while
                                   -- the helper lost its RLS bypass and vanished
@@ -340,6 +385,350 @@ begin
            where ns.nspname = 'basecamp' and p.proname = 'log_access_change')
          not like '%insert into basecamp.access_audit%' then
     raise exception 'log_access_change no longer writes access_audit — the triggers fire and record nothing';
+  end if;
+
+  -- D17-bis — the PRIVILEGED-ACTION writer must also still write, and still
+  -- gate. Its digest is pinned in 0004, but 0004 pins it immediately after
+  -- creating it, so that check can only catch an author who edited the file and
+  -- forgot to re-derive — never drift on a live database. PROVEN: replacing the
+  -- body with `begin return; end` (comments preserved so every mention test
+  -- passes) let 0002 commit clean, after which a NON-ADMIN could call it with no
+  -- error and no row written. Because the API treats "did not raise" as
+  -- "logged", every subsequent ban, invite and re-issue would have gone
+  -- unrecorded — the exact inversion of the guarantee this function exists for.
+  --
+  -- Guarded on existence: 0002 runs before 0004 on a fresh stamp.
+  --
+  -- PINNED BY DIGEST, NOT BY MENTION. An earlier version of this check used
+  -- `not like '%insert into basecamp.access_audit%'`, and a review defeated it
+  -- in one move: a body of `begin return; end` with the required phrases left
+  -- behind as COMMENTS passed both substring tests, 0002 printed "security
+  -- boundary asserted", and a NON-ADMIN could then call the function with no
+  -- error while nothing was written. Because the API treats "did not raise" as
+  -- "logged", every subsequent ban, invite and re-issue would have gone
+  -- unrecorded — the precise inversion of the guarantee this function exists
+  -- for. It is the same defeat this file already records for is_super_admin,
+  -- which is why the six original bodies are digest-pinned rather than
+  -- mention-checked; this one was written the weaker way by mistake.
+  --
+  -- ARITY FIRST. The scalar subqueries below return "more than one row" on an
+  -- overload, which aborts with a diagnosis about SQL rather than about the
+  -- boundary. Count before reading.
+  if to_regprocedure('basecamp.log_privileged_action(text,uuid)') is not null then
+    select count(*) into n
+      from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+     where ns.nspname = 'basecamp' and p.proname = 'log_privileged_action';
+    if n <> 1 then
+      raise exception 'expected exactly 1 basecamp.log_privileged_action, found % — an overload is a second implementation of a pinned decision, and PostgREST routes to it by argument name', n;
+    end if;
+    if not exists (
+      select 1 from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+       where ns.nspname = 'basecamp' and p.proname = 'log_privileged_action'
+         -- Normalized, exactly as the six original pins are and for the same
+         -- reason: a body pasted into the SQL Editor stores CRLF in `prosrc`
+         -- and a raw digest would miss on every correct Editor install of 0004.
+         and md5(replace(replace(p.prosrc, chr(13) || chr(10), chr(10)),
+                         chr(13), chr(10))) = 'f7a47fdfe66f5e57f8cad187b6564bdc'
+    ) then
+      raise exception 'log_privileged_action''s body differs from the one this lineage ships — a gutted or ungated body leaves every admin action unaudited while looking correct. READ the new body before re-deriving its digest';
+    end if;
+  end if;
+
+  -- D21 — THE NESTING-AWARE READ GATE'S BODY IS PINNED.
+  --
+  -- `category_or_child_has_grant` is SECURITY DEFINER, is granted EXECUTE to
+  -- `authenticated`, and is the ENTIRE non-admin arm of the categories SELECT
+  -- policy. Everything above checks that it EXISTS, that it is a definer, and
+  -- that the policy still names it — and a review PROVED that is not enough:
+  --
+  --   create or replace function basecamp.category_or_child_has_grant(uuid)
+  --     returns boolean language sql stable security definer set search_path to ''
+  --     as $x$ select true $x$;
+  --
+  -- keeps prosecdef, keeps the policy's mention, passes the definer hardening in
+  -- section 1, and hands every category's name, description and slug to any
+  -- signed-in person with zero grants. 0002 committed. That is the identical
+  -- defeat this file records for `category_has_grant` at the pin loop below, and
+  -- it arrived unpinned because 0005 adds the function AFTER this file runs.
+  --
+  -- GUARDED ON EXISTENCE, exactly like log_privileged_action above and for the
+  -- same reason: on a fresh stamp 0002 runs before 0005, so an unconditional
+  -- check would fail every clean install. Once 0005 has been applied, every
+  -- re-run of this file — including every case in the mutation suite — reads it.
+  --
+  -- ARITY FIRST, for the reason the pin loop gives: an overload would make the
+  -- scalar subquery below raise about SQL rather than about the boundary, and
+  -- section 2 would then GRANT EXECUTE on the overload.
+  if to_regprocedure('basecamp.category_or_child_has_grant(uuid)') is not null then
+    select count(*) into n
+      from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+     where ns.nspname = 'basecamp' and p.proname = 'category_or_child_has_grant';
+    if n <> 1 then
+      raise exception 'expected exactly 1 basecamp.category_or_child_has_grant, found % — an overload is a second implementation of the catalog read gate', n;
+    end if;
+    if not exists (
+      select 1 from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+       where ns.nspname = 'basecamp' and p.proname = 'category_or_child_has_grant'
+         and md5(replace(replace(p.prosrc, chr(13) || chr(10), chr(10)),
+                       chr(13), chr(10))) = '0f7bc3e3f3d517c82dba18b84b508f7a'
+    ) then
+      raise exception 'category_or_child_has_grant''s body differs from the one this lineage ships — a body of `select true` passes every existence and mention test and discloses every category to a user with no grants. READ the new body before re-deriving its digest';
+    end if;
+  end if;
+
+  -- D18 — the audit log's VOCABULARY. 0004 asserts these, but only just after
+  -- recreating them, so that assertion is a tautology. PROVEN: dropping both
+  -- CHECKs and re-running 0002 printed "security boundary asserted" and exited
+  -- 0, leaving the one table the design calls the record of what happened with
+  -- a free-text action column.
+  if to_regclass('basecamp.access_audit') is not null then
+    select count(*) into n
+      from pg_constraint c
+        join pg_class t on t.oid = c.conrelid
+        join pg_namespace ns on ns.oid = t.relnamespace
+     where ns.nspname = 'basecamp' and t.relname = 'access_audit'
+       and c.contype = 'c' and c.convalidated
+       and c.conname in ('basecamp_access_audit_action_check',
+                         'basecamp_access_audit_source_check');
+    if n <> 2 then
+      raise exception 'access_audit lost a vocabulary CHECK (found % of 2) — the log can record an action or a source no code writes', n;
+    end if;
+    -- BY CONTENT, not by name. Replacing both with `check (action is not null)`
+    -- under the same names passed the count above — so the assertion's own
+    -- claim, that it stops "an action or a source no code writes", was false.
+    -- The enumerated values ARE the vocabulary.
+    --
+    -- The BASE vocabulary is 0001's and is always required. The account-
+    -- lifecycle verbs arrive with 0004, so they are asserted only once 0004
+    -- has run — this file executes BEFORE it on a fresh stamp, where demanding
+    -- them would refuse a database that is perfectly correct for its stage.
+    if not exists (
+      select 1 from pg_constraint c
+        join pg_class t on t.oid = c.conrelid
+        join pg_namespace ns on ns.oid = t.relnamespace
+       where ns.nspname = 'basecamp' and t.relname = 'access_audit'
+         and c.conname = 'basecamp_access_audit_action_check'
+         and pg_get_constraintdef(c.oid) like '%grant%'
+         and pg_get_constraintdef(c.oid) like '%revoke%'
+    ) then
+      raise exception 'the access_audit action CHECK no longer enumerates grant/revoke — it has been widened to accept values no code writes';
+    end if;
+    if to_regprocedure('basecamp.log_privileged_action(text,uuid)') is not null then
+      if not exists (
+        select 1 from pg_constraint c
+          join pg_class t on t.oid = c.conrelid
+          join pg_namespace ns on ns.oid = t.relnamespace
+         where ns.nspname = 'basecamp' and t.relname = 'access_audit'
+           and c.conname = 'basecamp_access_audit_action_check'
+           and pg_get_constraintdef(c.oid) like '%invite%'
+           and pg_get_constraintdef(c.oid) like '%reissue_link%'
+           and pg_get_constraintdef(c.oid) like '%unban%'
+      ) then
+        raise exception 'the access_audit action CHECK lost the account-lifecycle verbs 0004 added — log_privileged_action can no longer record what it claims to';
+      end if;
+      if not exists (
+        select 1 from pg_constraint c
+          join pg_class t on t.oid = c.conrelid
+          join pg_namespace ns on ns.oid = t.relnamespace
+         where ns.nspname = 'basecamp' and t.relname = 'access_audit'
+           and c.conname = 'basecamp_access_audit_source_check'
+           and pg_get_constraintdef(c.oid) like '%auth_admin%'
+           and pg_get_constraintdef(c.oid) like '%access_grants%'
+      ) then
+        raise exception 'the access_audit source CHECK no longer enumerates the vocabulary';
+      end if;
+    end if;
+  end if;
+
+  -- D19 — the trust root's PROVENANCE pin. Same tautology problem: 0004 checks
+  -- it directly after recreating the policy. PROVEN: replacing the WITH CHECK
+  -- with `is_super_admin() and granted_by is not null` passed 0002 clean, after
+  -- which an administrator could record a colleague as the grantor of an
+  -- administrator they never granted.
+  --
+  -- Only applies once 0004 has run; before that `authenticated` cannot insert
+  -- here at all, which is the stronger state.
+  if has_table_privilege('authenticated', 'basecamp.super_admins', 'insert')
+     and not exists (
+       select 1 from pg_policies
+        where schemaname = 'basecamp' and tablename = 'super_admins' and cmd = 'INSERT'
+          and with_check like '%granted_by%' and with_check like '%uid()%'
+     ) then
+    raise exception 'the super_admins INSERT policy no longer pins granted_by to auth.uid() — a caller can name anyone as the grantor';
+  end if;
+  -- THE DEFAULT IS THE OTHER HALF OF THAT PAIR. The admin screen inserts only
+  -- `user_id`, so the policy's `granted_by = auth.uid()` is satisfied by the
+  -- column DEFAULT. Drop the default and every promotion fails with an RLS
+  -- violation — fail-closed, but a silent break of the feature both migrations
+  -- exist to enable, and nothing pinned it.
+  if has_table_privilege('authenticated', 'basecamp.super_admins', 'insert')
+     and not exists (
+       select 1 from pg_attrdef d
+         join pg_class c on c.oid = d.adrelid
+         join pg_namespace ns on ns.oid = c.relnamespace
+         join pg_attribute a on a.attrelid = c.oid and a.attnum = d.adnum
+        where ns.nspname = 'basecamp' and c.relname = 'super_admins'
+          and a.attname = 'granted_by'
+          and pg_get_expr(d.adbin, d.adrelid) like '%uid()%'
+     ) then
+    raise exception 'basecamp.super_admins.granted_by lost its auth.uid() default — the policy still requires it, so every promotion from the app will be refused';
+  end if;
+
+  -- D20 — CATEGORY NESTING (0005). Three facts, all of which the catalog
+  -- screen's promises rest on, and none of which 0005 can meaningfully assert
+  -- on its own: its copies run directly after the statements that create them.
+  --
+  -- Guarded on the column's existence, because this file runs BEFORE 0005 on a
+  -- fresh stamp.
+  if exists (
+    select 1 from pg_attribute a
+      join pg_class c on c.oid = a.attrelid
+      join pg_namespace ns on ns.oid = c.relnamespace
+     where ns.nspname = 'basecamp' and c.relname = 'categories'
+       and a.attname = 'parent_id' and not a.attisdropped
+  ) then
+    -- Block comments FIRST (they can contain `--`), then line comments, then
+    -- string literals. Order matters; getting it wrong reopens a hiding place.
+    depth_body := regexp_replace(
+      regexp_replace(
+        regexp_replace(
+          (select p.prosrc from pg_proc p join pg_namespace ns2 on ns2.oid = p.pronamespace
+            where ns2.nspname = 'basecamp' and p.proname = 'enforce_category_depth'),
+          '/\*.*?\*/', '', 'gn'),
+        '--[^\n]*', '', 'g'),
+      '''[^'']*''', '', 'g');
+    -- (1) The depth cap is attached AND enabled for origin traffic. Disabled,
+    -- it reads as present while nesting is uncapped, and every reader of this
+    -- table assumes a flat-or-one-deep shape.
+    select count(*) into n
+      from pg_trigger tg
+        join pg_class c on c.oid = tg.tgrelid
+        join pg_namespace ns on ns.oid = c.relnamespace
+     where ns.nspname = 'basecamp' and c.relname = 'categories'
+       and not tg.tgisinternal and tg.tgenabled in ('O','A')
+       and tg.tgname = 'basecamp_categories_depth_cap';
+    if n <> 1 then
+      raise exception 'the category depth cap is missing or disabled — nesting is uncapped and the catalog, sidebar and access matrix all assume it is not';
+    end if;
+
+    -- (2) The cap's BODY still checks both directions. Checking only "is my
+    -- parent a child?" lets a three-level tree be built from the bottom up:
+    -- create A, create B under A, then give A a parent. A mention test is weak,
+    -- but the alternative — a digest — would refuse every legitimate edit to a
+    -- message string, and the runtime cases in boundary_mutations.sh PART 14
+    -- exercise both directions for real.
+    -- EVERY HIDING PLACE STRIPPED BEFORE MATCHING — and there are three, not
+    -- one. A first fix stripped `--` line comments only, and a review walked
+    -- past it TWICE: once with the phrase in a block comment, once with it in a
+    -- string literal (raise debug '...'). Both times 0002 committed clean and a
+    -- three-level tree was then built in three statements.
+    --
+    -- A digest would end this, and is wrong here: it would refuse every
+    -- legitimate edit to a user-facing message string, which is the opposite of
+    -- what those messages are for. So the mention test stays and the hiding
+    -- places go, stripped once into `depth_body` so the next check cannot
+    -- forget a variant.
+    --
+    -- All three properties are checked — both directions and the parent lock.
+    -- PART 14 proves the behaviour at runtime; THIS is the live-drift check,
+    -- and the only one that runs against a deployed database.
+    -- THE SELF-PARENT GUARD IS STRIPPED BEFORE LOOKING FOR THE UPWARD CHECK,
+    -- and this is a third hiding place of exactly the kind the paragraph above
+    -- describes — this time an accidental one, made by the file being guarded.
+    --
+    -- `new.parent_id = new.id` (the self-parent guard 0005 added) CONTAINS the
+    -- substring `parent_id = new.id`, so the plain pattern matched it and the
+    -- upward assertion could no longer fail. PROVEN: delete the upward `exists`
+    -- probe entirely, keep the self-parent guard and the downward check, and
+    -- 0002 committed clean — after which `C under A`, then `A under B`, built a
+    -- three-level tree in two statements.
+    --
+    -- Stripping rather than anchoring on the `c.` alias: an assertion that
+    -- depends on somebody's choice of table alias refuses a correct rewrite,
+    -- which is how a guard earns its own deletion. Same strip-then-match idiom
+    -- the comment and literal removal above uses, for the same reason.
+    depth_upward := regexp_replace(depth_body, 'new\.parent_id\s*=\s*new\.id', '', 'g');
+    if depth_upward !~ 'parent_id\s*=\s*new\.id' then
+      raise exception 'enforce_category_depth no longer checks the UPWARD direction — a deeper tree can be built from the bottom up';
+    end if;
+    if depth_body !~ 'for share' then
+      raise exception 'enforce_category_depth no longer locks the parent row — two concurrent writers can jointly build a level the cap forbids';
+    end if;
+    -- The DOWNWARD half had no assertion at all: the checks above cover the
+    -- upward one and the lock, so a body keeping "am I already a parent?" while
+    -- dropping "is my parent already a child?" passed clean.
+    if depth_body !~ 'c\.id\s*=\s*new\.parent_id' then
+      raise exception 'enforce_category_depth no longer checks the DOWNWARD direction — a third level can be nested directly';
+    end if;
+
+    -- (2b) The self-parent CHECK. It is the ONLY guard for `set parent_id = id`
+    -- on UPDATE — the trigger's two probes both pass on that statement, because
+    -- one reads the OLD parent and the other asks about rows that do not exist
+    -- yet. (0005 now also refuses it in the trigger body, so the two overlap;
+    -- this asserts the constraint half, which nothing else did.) A self-parented
+    -- row is a 1-cycle that loops every parent-join and that ON DELETE RESTRICT
+    -- makes undeletable forever.
+    if not exists (
+      select 1 from pg_constraint c
+        join pg_class t on t.oid = c.conrelid
+        join pg_namespace ns on ns.oid = t.relnamespace
+       where ns.nspname = 'basecamp' and t.relname = 'categories'
+         and c.conname = 'basecamp_categories_parent_not_self'
+         and c.contype = 'c' and c.convalidated
+    ) then
+      raise exception 'basecamp_categories_parent_not_self is gone — a category can be made its own parent, which no delete can ever undo';
+    end if;
+
+    -- (2c) The read path still consults the widened predicate. Dropping back to
+    -- bare `category_has_grant` would make a container parent invisible while
+    -- its children stay visible — the client then holds a parent_id it cannot
+    -- resolve, and the grouping the administrator built does not render.
+    if to_regprocedure('basecamp.category_or_child_has_grant(uuid)') is not null
+       and not exists (
+         select 1 from pg_policies
+          where schemaname = 'basecamp' and tablename = 'categories' and cmd = 'SELECT'
+            and qual like '%category_or_child_has_grant%'
+       ) then
+      raise exception 'the categories SELECT policy no longer consults category_or_child_has_grant';
+    end if;
+
+    -- (3) Both containers refuse to take their contents with them. This is the
+    -- promise the delete button makes, and half of it lives in 0001.
+    if not exists (
+      select 1 from pg_constraint c
+        join pg_class t on t.oid = c.conrelid
+        join pg_namespace ns on ns.oid = t.relnamespace
+       where ns.nspname = 'basecamp' and t.relname = 'categories'
+         and c.conname = 'basecamp_categories_parent_id_fkey' and c.confdeltype = 'r'
+    ) then
+      raise exception 'categories.parent_id is no longer ON DELETE RESTRICT — deleting a parent would silently take its subcategories';
+    end if;
+  end if;
+  if not exists (
+    select 1 from pg_constraint c
+      join pg_class t on t.oid = c.conrelid
+      join pg_namespace ns on ns.oid = t.relnamespace
+     where ns.nspname = 'basecamp' and t.relname = 'entries'
+       and c.conname = 'basecamp_entries_category_id_fkey' and c.confdeltype = 'r'
+  ) then
+    raise exception 'entries.category_id is no longer ON DELETE RESTRICT — deleting a category would silently take its entries';
+  end if;
+  -- (4) The catalog is writable from a browser by anyone the policy allows, so
+  -- the policy is the whole gate. Asserted HERE rather than in 0005 because it
+  -- is a live-drift question about a policy 0001 created — in a
+  -- once-applied migration the mutation suite would never exercise it. No
+  -- parent_id guard: this predates nesting.
+  if has_any_column_privilege('authenticated', 'basecamp.categories', 'update')
+     and not exists (select 1 from pg_policies
+                      where schemaname = 'basecamp' and tablename = 'categories'
+                        and cmd = 'UPDATE' and qual like '%is_super_admin()%') then
+    raise exception 'authenticated can UPDATE categories with no super_admin policy deciding it — the catalog is editable by any signed-in person';
+  end if;
+  if has_any_column_privilege('authenticated', 'basecamp.entries', 'update')
+     and not exists (select 1 from pg_policies
+                      where schemaname = 'basecamp' and tablename = 'entries'
+                        and cmd = 'UPDATE' and qual like '%is_super_admin()%') then
+    raise exception 'authenticated can UPDATE entries with no super_admin policy deciding it';
   end if;
 
   -- No view may run with owner rights.
@@ -636,12 +1025,57 @@ begin
   if n < 13 then
     raise exception 'basecamp has % function(s), expected at least 13', n;
   end if;
-  select count(*) into n from pg_trigger tg
-    join pg_class c on c.oid = tg.tgrelid
-    join pg_namespace ns on ns.oid = c.relnamespace
-   where ns.nspname = 'basecamp' and not tg.tgisinternal;
-  if n < 16 then
-    raise exception 'basecamp has % trigger(s), expected at least 16', n;
+  -- A NAMED, TABLE-QUALIFIED SET — NOT A FLOOR, AND NOT NAMES ALONE.
+  --
+  -- This was `n < 16`, and a floor is structurally incapable of the job: every
+  -- trigger the schema gains hands it slack to absorb a dropped one. PROVEN —
+  -- adding 0005's depth cap took the real count to 17, and the suite's own "a
+  -- trigger was dropped" case COMMITTED against the unchanged floor.
+  --
+  -- The first replacement matched on `tgname` alone, and that was defeated the
+  -- same way this file already records further up: a same-named DECOY on
+  -- another table restores the name while the real guard is gone. PROVEN —
+  -- dropping `basecamp_member_types_no_system_delete` and recreating it on
+  -- `basecamp.categories` committed clean, after which a system member type
+  -- could be deleted.
+  --
+  -- So: name AND table. A named set cannot be satisfied by slack, and a
+  -- qualified one cannot be satisfied by a decoy. Adding a trigger in a future
+  -- migration means adding a line here — a one-line, fail-loud edit, which is
+  -- the maintenance you want.
+  detail := '';
+  for bad in
+    select t.tbl, t.trg from (values
+      ('access_audit','basecamp_access_audit_no_mutation'),
+      ('access_audit','basecamp_access_audit_no_truncate'),
+      ('access_grants','basecamp_access_grants_audit'),
+      ('access_grants','basecamp_access_grants_no_truncate'),
+      ('categories','basecamp_categories_set_updated_at'),
+      ('entries','basecamp_entries_set_updated_at'),
+      ('member_types','basecamp_member_types_no_system_delete'),
+      ('member_types','basecamp_member_types_set_updated_at'),
+      ('members','basecamp_members_audit'),
+      ('members','basecamp_members_no_truncate'),
+      ('members','basecamp_members_set_updated_at'),
+      ('super_admins','basecamp_super_admins_audit'),
+      ('super_admins','basecamp_super_admins_keep_last'),
+      ('super_admins','basecamp_super_admins_no_truncate'),
+      ('type_grants','basecamp_type_grants_audit'),
+      ('type_grants','basecamp_type_grants_no_truncate')
+    ) as t(tbl, trg)
+    where not exists (
+      select 1 from pg_trigger tg
+        join pg_class c on c.oid = tg.tgrelid
+        join pg_namespace ns on ns.oid = c.relnamespace
+       where ns.nspname = 'basecamp' and not tg.tgisinternal
+         and tg.tgenabled in ('O','A')
+         and c.relname = t.tbl and tg.tgname = t.trg
+    )
+  loop
+    detail := detail || format(E'\n    %s on %s', bad.trg, bad.tbl);
+  end loop;
+  if detail <> '' then
+    raise exception 'trigger(s) missing, on the wrong table, or disabled for origin traffic:%', detail;
   end if;
 
   detail := '';
@@ -840,6 +1274,66 @@ begin
   -- machine-checks the precondition, deliberately — a literal scanner written in
   -- PL/pgSQL and got subtly wrong would refuse correct installs, which is the
   -- failure this whole change exists to end.
+  --
+  -- THE SELECTOR NORMALIZES TOO, for the reason directly above. It reads a
+  -- digest of `list_people`'s body to decide which branch of the pin applies, so
+  -- a body stored through the Editor's CRLF route would fail to match the 0004
+  -- digest, silently re-select the pre-0004 expectation, and refuse a correct
+  -- post-0004 install. Every `md5(prosrc)` in this file is normalized; if you
+  -- add another, normalize it there too.
+  -- `list_people` IS PINNED TO ONE DIGEST — WHICH ONE DEPENDS ON APPLIED STATE.
+  --
+  -- This file runs BEFORE 0004, which replaces that function to add
+  -- `banned_until` and `member_type_id`. So when this assertion first executes
+  -- the 0001 body is installed, and after 0004 the newer one is — and this file
+  -- is re-run against that state, both by supabase/tests/boundary_mutations.sh
+  -- and by anyone re-applying it.
+  --
+  -- A SET of two acceptable digests was the obvious fix and is the WRONG one.
+  -- It is monotonic: every future migration that replaces a pinned function
+  -- appends another, and "the body is exactly this" decays into "the body is
+  -- any body we ever shipped". Concretely, it would let a DROP+CREATE that
+  -- REVERTS list_people to the 0001 body pass — a silent functional regression
+  -- the pin exists to catch.
+  --
+  -- So the expected digest is selected by a fact about the database rather than
+  -- widened: the presence of log_privileged_action, which 0004 creates and
+  -- nothing else does, says 0004 has been applied. The accept set stays size
+  -- ONE for any given database, a revert is still refused, and adding a third
+  -- body later means changing a branch rather than lengthening a list.
+  -- THE SELECTOR IS PINNED TOO. A review PROVED the gap: nothing in this file
+  -- asserted that log_privileged_action EXISTS, so dropping it re-selected the
+  -- pre-0004 digest and a full revert of list_people() to its 0001 body passed
+  -- clean — the exact regression the branch below claims to refuse. A selector
+  -- that can be removed unnoticed is not a selector.
+  --
+  -- The rule: if list_people carries the 0004 body, 0004 has been applied, so
+  -- its sentinel must still be there.
+  if exists (select 1 from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+              where ns.nspname = 'basecamp' and p.proname = 'list_people'
+                and md5(replace(replace(p.prosrc, chr(13) || chr(10), chr(10)),
+                                chr(13), chr(10))) = '781512b265e819006bb3f78b652ebd6a')
+     and to_regprocedure('basecamp.log_privileged_action(text,uuid)') is null then
+    raise exception 'list_people() carries the 0004 body but log_privileged_action is gone — the digest selector has been removed, which re-opens a silent revert of the roster';
+  end if;
+  -- AND THE OTHER DIRECTION. The check above only fires when the sentinel is
+  -- dropped and the new body is left behind; dropping BOTH — revert the roster
+  -- to its 0001 body and remove the RPC — re-selected the old digest and passed
+  -- clean. The trust root's write privilege is a fact 0004 leaves behind that a
+  -- `drop function` cannot remove, so it answers "has 0004 run?" when the
+  -- sentinel has been taken away.
+  -- INSERT **OR** DELETE. Reading only INSERT left an escape: revoke INSERT,
+  -- keep DELETE, drop the RPC and revert the roster, and this committed —
+  -- stranding the install able to demote administrators but never promote one,
+  -- with no in-app way back. Fail-closed, but it is the same "no in-app
+  -- recovery" hazard the last-admin guard exists to prevent. Either privilege
+  -- is a durable fact that `drop function` cannot erase.
+  if (has_table_privilege('authenticated', 'basecamp.super_admins', 'insert')
+      or has_table_privilege('authenticated', 'basecamp.super_admins', 'delete'))
+     and to_regprocedure('basecamp.log_privileged_action(text,uuid)') is null then
+    raise exception '0004 has been applied (authenticated holds INSERT or DELETE on the trust root) but log_privileged_action is missing — the audit path for privileged actions is gone';
+  end if;
+
   detail := '';
   for bad in
     select f.fn, count(p.oid) as n from (values
@@ -849,7 +1343,11 @@ begin
       ('can_read_entry',    'b725d5ed56514e1b7d4946d4afa5e926'),
       ('can_read_category', '77ac78aa90567fcd5ac6891451605dfa'),
       ('log_access_change', '41d5a7b6ab0dc5b4cda44d794d729a7e'),
-      ('list_people',       '3651a3f932019281566ebfadda9d0708')
+      -- Selected by applied state, not widened. See the note above.
+      ('list_people',       case when to_regprocedure('basecamp.log_privileged_action(text,uuid)') is null
+                                 then '3651a3f932019281566ebfadda9d0708'  -- 0001's body, pre-0004
+                                 else '781512b265e819006bb3f78b652ebd6a'  -- 0004's body
+                            end)
     ) as f(fn, expected)
     left join (pg_proc p join pg_namespace ns on ns.oid = p.pronamespace and ns.nspname = 'basecamp')
       on p.proname = f.fn

@@ -1,12 +1,18 @@
 -- Example catalog — SAFE TO RUN, SAFE TO DELETE.
 --
--- The catalog starts empty and there is no entry-creation UI yet, so this file
--- answers the question the schema alone does not: what does a valid row look
--- like? Run it to get a catalog you can click around, then delete the rows and
--- add your own.
+-- WHAT THIS IS FOR, now that there IS an entry-creation UI. Admin -> Catalog can
+-- create, rename, reorder, nest and delete everything below, and for building
+-- your real catalog it is the better tool — it derives slugs, validates against
+-- every CHECK before it writes, and cannot offer you something the database
+-- would refuse. This file exists for the other job: showing what a FULL row
+-- looks like, all at once, with the non-obvious constraints written out. Run it
+-- to get a catalog you can click around while you learn the shape, then delete
+-- the rows and build your own on the screen.
 --
--- Run in the SQL Editor AFTER 0001 and 0002. It connects as postgres, so RLS
--- does not apply and no grant is needed. Re-running it is a no-op.
+-- Run in the SQL Editor AFTER 0001 and 0002 — and after 0005 if you want the
+-- subcategory rows below to apply, since `parent_id` does not exist before it.
+-- It connects as postgres, so RLS does not apply and no grant is needed.
+-- Re-running it is a no-op.
 --
 -- Constraints worth knowing before writing your own rows:
 --   * slug is kebab-case and unique:  ^[a-z0-9]+(-[a-z0-9]+)*$
@@ -98,8 +104,44 @@ select c.id, 'vendor-list', 'Vendor List', 'vendor-list', 'Who we pay, for what,
   from basecamp.categories c where c.slug = 'reference'
 on conflict (slug) do nothing;
 
+-- ONE SUBCATEGORY, so the example covers nesting as well as entries.
+--
+-- `parent_id` arrives in 0005. This block is guarded so the file still applies
+-- cleanly on a database that has not had 0005 yet — it skips, rather than
+-- aborting the whole transaction on `42703 column does not exist` and taking
+-- every other row with it. (It would: this file is one transaction.)
+--
+-- Nesting is capped at ONE level by a trigger, in both directions: this row can
+-- hold entries but cannot hold another category, and `reference` cannot be given
+-- a parent while this row hangs off it.
+do $$
+begin
+  if exists (select 1 from information_schema.columns
+              where table_schema = 'basecamp' and table_name = 'categories'
+                and column_name = 'parent_id') then
+    execute $q$
+      insert into basecamp.categories (slug, name, description, sort_order, parent_id)
+      select 'runbooks', 'Runbooks', 'Step-by-step procedures. Sits under Reference.', 10, c.id
+        from basecamp.categories c where c.slug = 'reference'
+      on conflict (slug) do nothing;
+    $q$;
+    execute $q$
+      insert into basecamp.entries (category_id, slug, display_name, technical_name, description, entry_type, status, host, auth_boundary, trigger_type, owner, launch_url, repo_url, runbook_url, source_of_truth_note, sort_order)
+      select c.id, 'oncall-runbook', 'On-call Runbook', 'oncall-runbook', 'What to do when the pager goes off, in order.', 'reference_only'::basecamp.entry_type, 'active'::basecamp.entry_status, 'none'::basecamp.entry_host, 'none'::basecamp.entry_auth_boundary, 'manual'::basecamp.entry_trigger_type, 'Operations', null, null, null, 'Provenance: reviewed at the last incident review.', 10
+        from basecamp.categories c where c.slug = 'runbooks'
+      on conflict (slug) do nothing;
+    $q$;
+  else
+    raise notice 'skipping the subcategory example: basecamp.categories.parent_id does not exist, so 0005 has not been applied';
+  end if;
+end $$;
+
 commit;
 
--- To remove everything this file inserted:
+-- To remove everything this file inserted. ORDER MATTERS on the categories:
+-- `categories.parent_id` is ON DELETE RESTRICT, and RESTRICT is checked per row
+-- immediately, so deleting a parent and its subcategory in ONE statement is
+-- refused (23503) even though that statement would have removed both.
 --   delete from basecamp.entries;
+--   delete from basecamp.categories where parent_id is not null;
 --   delete from basecamp.categories;

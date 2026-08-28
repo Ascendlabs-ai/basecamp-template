@@ -11,8 +11,15 @@ create schema if not exists auth;
 create table if not exists auth.users (
   id uuid primary key default gen_random_uuid(),
   email text,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- Real on Supabase (GoTrue owns it). Stubbed because 0004's list_people()
+  -- returns it: without the column the roster function will not compile, and
+  -- the boundary run would fail for a reason that has nothing to do with the
+  -- boundary.
+  banned_until timestamptz
 );
+-- Idempotent add, for a cluster left over from before 0004 introduced the need.
+alter table auth.users add column if not exists banned_until timestamptz;
 
 create or replace function auth.uid() returns uuid
 language sql stable as $$

@@ -105,7 +105,12 @@ export default async function AccessAdminPage() {
     supabase.rpc("list_people", {}, { count: "exact" }),
     supabase
       .from("categories")
-      .select("id, slug, name, entries(id, display_name, entry_type, sort_order)", {
+      // `parent_id` so the grant screens can say which parent a subcategory
+      // belongs to. Only `slug` is unique — `uniqueSlug` dedupes slugs, not
+      // names — so two subcategories called "Reports" under different parents
+      // would otherwise be indistinguishable on the one screen that decides who
+      // sees what.
+      .select("id, slug, name, parent_id, entries(id, display_name, entry_type, sort_order)", {
         count: "exact",
       })
       .order("sort_order", { ascending: true })
@@ -274,6 +279,7 @@ export default async function AccessAdminPage() {
     id: string;
     slug: string;
     name: string;
+    parent_id: string | null;
     entries: Array<{ id: string; display_name: string; entry_type: string }> | null;
   }>;
 
@@ -286,11 +292,23 @@ export default async function AccessAdminPage() {
   //   launchable  — the matrix's columns. The design's matrix is apps, and 41
   //                 columns of mostly-unlaunchable rows is the grid nobody
   //                 could operate that this rebuild exists to replace.
+  /**
+   * Every category by id, BEFORE the entries filter below.
+   *
+   * The grant screens label a subcategory with its parent, and a container
+   * parent has no entries of its own — so building this from the filtered list
+   * left exactly the arrangement nesting exists for without a breadcrumb, on
+   * the one screen where two same-named "Reports" grant different people
+   * different things.
+   */
+  const categoryNames = new Map(rawCats.map((c) => [c.id, { name: c.name }]));
+
   const categories = rawCats
     .map<GrantCategory>((c) => ({
       id: c.id,
       slug: c.slug,
       name: c.name,
+      parent_id: c.parent_id,
       entries: (c.entries ?? []).map((e) => ({ id: e.id, display_name: e.display_name })),
     }))
     .filter((c) => c.entries.length > 0);
@@ -300,6 +318,7 @@ export default async function AccessAdminPage() {
       id: c.id,
       slug: c.slug,
       name: c.name,
+      parent_id: c.parent_id,
       entries: (c.entries ?? [])
         .filter((e) => e.entry_type === "launchable")
         .map((e) => ({ id: e.id, display_name: e.display_name })),
@@ -310,6 +329,7 @@ export default async function AccessAdminPage() {
     <AccessAdmin
       people={people}
       categories={categories}
+      categoryNames={categoryNames}
       launchableCategories={launchableCategories}
       initialGrants={(grantRes.data ?? []) as Grant[]}
       memberTypes={(typeRes.data ?? []) as MemberType[]}

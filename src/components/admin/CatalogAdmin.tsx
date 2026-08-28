@@ -15,7 +15,9 @@ import Snackbar from "@mui/material/Snackbar";
 
 import TopBar from "@/components/shell/TopBar";
 import {
+  CATEGORY_VANISHED,
   CREATE_CATEGORY_KEY,
+  canHoldChildren,
   CREATE_ENTRY_KEY,
   REORDER_CATEGORIES_KEY,
   categoryKey,
@@ -194,11 +196,59 @@ export default function CatalogAdmin({
 
   // ---- Categories --------------------------------------------------------
 
+  /**
+   * Everything that can be wrong with a chosen parent, in one place.
+   *
+   * THE DEPTH CAP IS THE DATABASE'S — `enforce_category_depth` refuses a third
+   * level in both directions, and that is what makes it a cap. This exists so the
+   * common case comes back as a sentence instead of a round trip. It is not the
+   * rule and cannot be, because this screen writes straight from the browser on
+   * the caller's own token.
+   *
+   * Create and rename had a verbatim copy each, including the message string, and
+   * they had already drifted: only rename checked self-parenting. `childId` is
+   * what makes that check possible — omit it on create, where the row does not
+   * exist yet and cannot be its own parent.
+   *
+   * IT RETURNS THE PARENT, not just a verdict, and that is load-bearing rather
+   * than convenience. A first version returned `string | null` and left the
+   * callers to find the row again for their success message — except the create
+   * path did not re-find it, it just kept saying `parent`, which had moved into
+   * this closure. `parent` is a DOM global (`lib.dom` declares
+   * `var parent: WindowProxy`), so it resolved silently: `tsc` and `eslint` both
+   * passed, and every create — nested or not — announced
+   * `Subcategory "X" created under ""`, because `window.name` is the empty
+   * string. Handing the row back removes the second lookup and the shadow with
+   * it. See the `no-restricted-globals` rule in `eslint.config.mjs`, added so the
+   * next one of these is a lint error rather than a message nobody reads twice.
+   */
+  const resolveParent = useCallback(
+    (
+      parentId: string | null | undefined,
+      childId?: string,
+    ): { error: string } | { parent: AdminCategory | null } => {
+      if (!parentId) return { parent: null };
+      const found = categories.find((c) => c.id === parentId);
+      if (!found) return { error: CATEGORY_VANISHED };
+      if (!canHoldChildren(found)) {
+        return {
+          error: `"${found.name}" is already a subcategory, and categories only go one level deep.`,
+        };
+      }
+      if (childId && parentId === childId) return { error: "A category cannot sit under itself." };
+      return { parent: found };
+    },
+    [categories],
+  );
+
   const createCategory = useCallback(
-    (draft: CategoryDraft) =>
+    (draft: CategoryDraft, parentId: string | null = null) =>
       run(CREATE_CATEGORY_KEY, async () => {
         const fields = validateCategory(draft);
         if (!fields.ok) return fields.message;
+
+        const chosen = resolveParent(parentId);
+        if ("error" in chosen) return chosen.error;
 
         // Generated, never typed. The client is asked for a name; the kebab-case
         // identifier the format CHECK demands is derived from it, and
@@ -207,38 +257,79 @@ export default function CatalogAdmin({
         const slug = uniqueSlug(fields.row.name, categories.map((c) => c.slug));
         if (!slug) return unsluggable(fields.row.name);
 
+        // Ordered among its SIBLINGS, not among every category. Numbering a new
+        // subcategory against the whole table would push it past its own
+        // parent's other children on the first render.
+        const siblings = categories.filter((c) => c.parent_id === (parentId ?? null));
+
         const supabase = createClient();
-        const { error: insError } = await supabase.from("categories").insert({
-          slug,
-          name: fields.row.name,
-          description: fields.row.description,
-          sort_order: nextSortOrder(categories),
-        });
+        // `.select("id")` on an INSERT too. RLS raises 42501 on a refused
+        // insert rather than filtering, so `insError` alone would be correct
+        // here — but every other mutation on this screen proves it wrote, and a
+        // reader should not have to know which of the four verbs is the
+        // exception in order to trust the pattern.
+        const { data, error: insError } = await supabase
+          .from("categories")
+          .insert({
+            slug,
+            name: fields.row.name,
+            description: fields.row.description,
+            sort_order: nextSortOrder(siblings),
+            parent_id: parentId,
+          })
+          .select("id");
         if (insError) {
           return (
             explainWriteError("create-category", insError, { slug }) ??
             failedWrite("Could not create the category", insError, resync)
           );
         }
+        if (!data || data.length === 0) return didNotApply();
         resync();
-        setNotice(`Category "${fields.row.name}" created.`);
+        setNotice(
+          chosen.parent
+            ? `Subcategory "${fields.row.name}" created under "${chosen.parent.name}".`
+            : `Category "${fields.row.name}" created.`,
+        );
         return null;
       }),
-    [categories, resync, run, setNotice],
+    [categories, didNotApply, resolveParent, resync, run, setNotice],
   );
 
+  /**
+   * Rename a category, and optionally move it under a different parent.
+   *
+   * `parentId === undefined` means "leave the parent alone" — a plain rename.
+   * `null` means "make it top level". Distinguishing those is why the parameter
+   * is optional rather than defaulted: a rename must not silently un-nest.
+   *
+   * The MOVE is checked by the database in both directions, and every failure
+   * mode here already had a handler: `explainWriteError` passes the depth cap's
+   * own 23001 message through, and the zero-row branch catches an RLS refusal.
+   * Last-write-wins on `name`/`description` is deliberate — two scalar fields
+   * the person just typed, unlike `updateEntry`'s seventeen columns frozen at
+   * dialog-open, which is why that one carries an `updated_at` guard and this
+   * does not.
+   */
   const updateCategory = useCallback(
-    (id: string, draft: CategoryDraft) =>
+    (id: string, draft: CategoryDraft, parentId?: string | null) =>
       run(categoryKey(id), async () => {
         const fields = validateCategory(draft);
         if (!fields.ok) return fields.message;
+
+        const chosen = resolveParent(parentId, id);
+        if ("error" in chosen) return chosen.error;
 
         const supabase = createClient();
         // `slug` is NOT updated. It is the stable identity — see
         // `validateCategory` — so a rename changes only what people read.
         const { data, error: updError } = await supabase
           .from("categories")
-          .update({ name: fields.row.name, description: fields.row.description })
+          .update({
+            name: fields.row.name,
+            description: fields.row.description,
+            ...(parentId === undefined ? {} : { parent_id: parentId }),
+          })
           .eq("id", id)
           .select("id");
         if (updError) {
@@ -256,7 +347,7 @@ export default function CatalogAdmin({
         setNotice(`Category renamed to "${fields.row.name}".`);
         return null;
       }),
-    [didNotApply, resync, run, setNotice],
+    [didNotApply, resolveParent, resync, run, setNotice],
   );
 
   const moveCategory = useCallback(
@@ -265,7 +356,21 @@ export default function CatalogAdmin({
       // row that moved, so this write is not row-local and a per-row claim left
       // every other row's arrows live — see REORDER_CATEGORIES_KEY.
       run(REORDER_CATEGORIES_KEY, async () => {
-        const updates = reorder(categories, id, direction);
+        // WITHIN SIBLINGS. `reorder` renumbers a list, and handing it every
+        // category would interleave subcategories with top-level ones — moving
+        // a child "up" past its own parent, which the tree cannot render.
+        const moving = categories.find((c) => c.id === id);
+        // Gone from under us — another administrator deleted it between this
+        // page rendering and this click. Without the guard the row falls into
+        // the top-level group, `reorder` returns [] for an id it cannot find,
+        // and the handler reports success having done nothing. `moveEntry`
+        // handles the identical case explicitly.
+        if (!moving) {
+          resync();
+          return didNotApply();
+        }
+        const siblings = categories.filter((c) => c.parent_id === moving.parent_id);
+        const updates = reorder(siblings, id, direction);
         // Already at the end. The buttons render unavailable there, so this is
         // the belt to that braces rather than a path anyone reaches.
         if (updates.length === 0) return null;
@@ -320,18 +425,26 @@ export default function CatalogAdmin({
         // a sensible default now: the quick-add row seeds the draft with
         // `nextSortOrder` for its category, and the dialog recomputes it when
         // the category changes.
-        const { error: insError } = await supabase.from("entries").insert(row.row);
+        // `.select("id")` for the reason createCategory gives: RLS raises on a
+        // refused INSERT so the error alone is sufficient here, but a reader
+        // should not have to know which verb is the exception to trust the
+        // pattern.
+        const { data: inserted, error: insError } = await supabase
+          .from("entries")
+          .insert(row.row)
+          .select("id");
         if (insError) {
           return (
             explainWriteError("create-entry", insError, { slug }) ??
             failedWrite("Could not add the entry", insError, resync)
           );
         }
+        if (!inserted || inserted.length === 0) return didNotApply();
         resync();
         setNotice(`"${row.row.display_name}" added to the catalog.`);
         return null;
       }),
-    [entries, resync, run, setNotice],
+    [didNotApply, entries, resync, run, setNotice],
   );
 
   /**

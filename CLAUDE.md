@@ -76,13 +76,39 @@ colours and icons are placeholders — `README.md` lists the four places to chan
 
 ## The one thing that makes this app safe
 
-**All access is enforced by Postgres row-level security.** There is no server-side role check
-anywhere in the code, and no `service_role` key — the app holds only the anon key, and a signed-in
-person's requests carry their own token. Somebody with no grants gets an empty catalog, not a
-filtered one.
+**All access is enforced by Postgres row-level security.** The app holds the anon key, and a
+signed-in person's requests carry their own token. Somebody with no grants gets an empty catalog,
+not a filtered one.
 
-That is why `.env.local` must hold the **anon** key and never the `service_role` key: the
-service_role key bypasses RLS entirely, and this app has no second line of defence behind it.
+That is why `NEXT_PUBLIC_SUPABASE_ANON_KEY` must hold the **anon** key and never the
+`service_role` key: service_role bypasses RLS entirely, and this app has no second line of defence
+behind it.
+
+**One narrow exception, and its exact boundary.** Creating a person's account cannot be expressed
+as an RLS policy — identities live in `auth.users`, which this app does not own. So there is a
+single privileged path, in `src/lib/supabase/admin.ts`, and it is bounded three ways:
+
+1. **The database authorises it, not TypeScript.** The route asks Postgres
+   `basecamp.is_super_admin()` on the caller's own token — the same trust root every policy
+   consults — and answers 401 or 403 before anything privileged exists.
+2. **The privileged client is built only after that answers `true`**, from
+   `SUPABASE_SERVICE_ROLE_KEY`, which has no `NEXT_PUBLIC_` prefix and so cannot reach the browser.
+3. **It cannot touch a `basecamp` table, and it cannot do arbitrary things to an account.** Callers
+   get a facade of four *verbs* with pinned arguments — add-or-recover, issue-a-link, set-banned,
+   look-up — not the underlying Supabase Auth methods. That distinction is the boundary: handing
+   over `updateUserById` would accept `{ role: "service_role" }`, which is a route straight back to
+   full RLS bypass, and `{ password }`, which is silent account takeover. `ban_duration` is the only
+   attribute this app can send. Every catalog row, grant, member type and audit entry is still read
+   and written on the signed-in person's own token, decided by RLS, exactly as before.
+
+   **One destructive verb is reachable, narrowly.** Account deletion exists as a `rollback` closure
+   returned by add-or-recover, and only when that call actually minted the account — so it can undo
+   a half-finished creation and nothing else. It is not offered as an offboarding tool: removing
+   someone suspends them, which is reversible and keeps their audit history readable.
+
+So nothing RLS protected before is protected less. What sits beside it is the ability to mint and
+suspend identities, which is a different thing in a different schema. Three API routes use it —
+add a person, re-issue their sign-in link, suspend or restore them — and nothing else may.
 
 Access is the **union** of two things — what a person's *type* is granted, and what that person is
 granted individually. Neither can subtract from the other; there is no deny rule, on purpose.
@@ -96,6 +122,12 @@ using the signed-in person's own token, because RLS is the gate no matter who is
 If you add a screen that writes, follow that pattern: a policy, not a check in TypeScript. A role
 check in application code is not a second lock — it is a lock on the front door of a building with
 no walls.
+
+Promoting and demoting administrators follows that rule and deliberately has **no API route**: it
+is an ordinary write to `basecamp.super_admins` from the browser. The INSERT policy's `WITH CHECK`
+gates on the *caller*, so a non-administrator cannot promote themselves whatever the UI believes,
+and `supabase/tests/boundary_mutations.sh` proves it by trying. The only reason the three
+account-lifecycle actions have routes is that they call Supabase Auth, which no policy can reach.
 
 Reading the role to decide **which screen to draw** is a different thing, and the app does it: the
 sidebar hides the Admin links, and an empty catalog says "yours is empty" to an administrator and
@@ -115,12 +147,19 @@ are irreversible or cost real money, which is the whole reason they are on the l
 | Layer | Tool |
 |-------|------|
 | Frontend | Next.js 16 App Router, React 19, TypeScript, MUI 7 with Emotion, Framer Motion |
-| Backend | None separate — the database answers the app directly, with no server-side role check |
+| Backend | The database answers the app directly. Three `/api/admin/*` routes exist solely to call Supabase Auth — see the exception above |
 | Database | Supabase Postgres, everything in the `basecamp` schema, all of it behind row-level security |
-| Hosting | Vercel — two environment variables and no other configuration |
+| Hosting | Vercel — two environment variables, plus `SUPABASE_SERVICE_ROLE_KEY` if you add people from the app |
 | Code lives in | This repository, the copy you stamped from the template |
 
-Sign-in: Supabase Auth, email and password.
+Sign-in: Supabase Auth, email and password. Accounts are created from `/admin/access` → **Add
+person**, which mints the account and hands the administrator a one-time link to pass on. **No
+email is ever sent by this app** — there is no mail provider and no SMTP anywhere in it.
+
+Add person needs a **member type** to assign, so `0004` seeds three (staff, contractor, client) and
+marks them `is_system`, which makes them undeletable. Renaming is left open on purpose: grants
+attach to the row, not the label. Before that seed existed a fresh stamp had zero types and the
+screen could not be used — if you touch the seed, keep the assertion in `0004` that proves it took.
 
 **"No self-signup" means the app, not the project — and the difference matters.** This app ships no
 signup screen and the sign-in page says accounts are issued by an administrator. Your Supabase
@@ -129,9 +168,17 @@ with **zero access** until you grant them something. That is the model working a
 hole — but if you want the sign-in page's wording to be literally true, turn signup off in
 Authentication → Providers → Email.
 
-Password reset is built and lives at `/auth/reset`. **Two dashboard settings have to be right
-before a reset email reaches anyone** — the redirect URL and email delivery. Both fail silently if
-they are wrong; `supabase/README.md` has them.
+**There is no self-service password reset, and that is a decision rather than an omission.** An
+earlier version shipped a `/auth/reset` page fed by Supabase's recovery email; both are gone. The
+emailed route has two dashboard settings that fail *silently* when wrong and a built-in mailer
+capped at a couple of messages an hour, so the button reported success whether or not anything
+arrived. `README.md` → "What is deliberately not here" records the trade in full, including what it
+costs. **Do not re-add a page that nothing sends to** — if you bring the flow back, bring its sender
+back in the same change.
+
+The way back in for anyone locked out is `/admin/access` → a person's ⋮ menu → **Issue a sign-in
+link**, which generates the link and shows it on screen for you to hand over. It either works in
+front of you or says why.
 
 ## Commands
 
@@ -144,6 +191,11 @@ they are wrong; `supabase/README.md` has them.
 
 Tests are Node's own runner with type stripping, so they need **Node 22.6 or newer**, and they
 cover the pure logic only — no database needed. `README.md` lists exactly what they cover.
+
+**`supabase/tests/boundary_mutations.sh` is the security gate; `npm test` is convenience.**
+`npm test` never opens a database connection, and every access decision in this app is made by
+Postgres — so it can be entirely green while the trust root is wide open. Run the shell suite
+whenever you touch `0002`, `0004`, a policy, or a definer function.
 
 **`npm test` does not touch the database**, which is where all the access enforcement lives.
 `supabase/migrations/0002_security_boundary.sql` asserts the boundary at apply time and refuses to

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -410,7 +410,15 @@ test("the security boundary still pins the access-model bodies and the trigger-f
     "utf8",
   );
 
-  const pinTuples = [...boundary.matchAll(/^\s*\('(\w+)',\s*'([0-9a-f]{32})'\)/gm)].map(
+  // No closing `)` in this pattern, deliberately. Since 0004 the VALUES list
+  // carries a THIRD column — a second acceptable digest, used by `list_people`
+  // because 0002 runs before 0004 replaces that function and is re-run after.
+  // Anchoring on the close paren silently matched ZERO tuples once that column
+  // appeared, and a test that finds nothing asserts nothing.
+  //
+  // The continuation line carrying the alternate digest does not start with
+  // `('`, so it cannot produce a spurious entry.
+  const pinTuples = [...boundary.matchAll(/^\s*\('(\w+)',\s*'([0-9a-f]{32})'/gm)].map(
     (m) => [m[1], m[2]] as const,
   );
   const pinned = new Map(pinTuples);
@@ -432,11 +440,13 @@ test("the security boundary still pins the access-model bodies and the trigger-f
     "can_read_entry",
     "can_read_category",
     "log_access_change",
-    // The one that returns other people's email addresses, and the one 0002
-    // itself calls "the weakest place to be lenient". It was pinned in 0002 on
-    // 2026-08-17 and this list was not updated, so the only always-on guard
-    // against a dropped pin had a blind spot over exactly the PII function.
-    "list_people",
+    // `list_people` IS NOT HERE, and its absence is checked rather than assumed
+    // — see the block below. It is pinned by a state-conditional digest since
+    // 0004 replaces its body, so the flat scan above cannot see it. It was
+    // pinned in 0002 on 2026-08-17 and this list was not updated for a day,
+    // which left the only always-on guard against a dropped pin blind over
+    // exactly the function that returns other people's email addresses. Never
+    // let it fall out of BOTH places at once.
   ];
   assert.deepEqual(
     mustPin.filter((fn) => !pinned.has(fn)),
@@ -488,6 +498,33 @@ test("the security boundary still pins the access-model bodies and the trigger-f
     "A digest in 0002 does not match the body 0001 actually ships. Every client install " +
       "would fail with 'an access-model function body differs from the one this template " +
       "ships'. If you changed a body deliberately, READ it, then update the digest in 0002.",
+  );
+
+  // `list_people`, whose pin is conditional and therefore invisible above.
+  //
+  // Two things are checked, and they fail for different reasons. FIRST, that it
+  // is pinned at all, in one form or the other: if it is neither a flat tuple
+  // nor a conditional, the pin has been dropped outright and the PII function is
+  // rewritable to a constant. SECOND, that the PRE-0004 branch still names the
+  // digest of the body 0001 actually ships — the same property the loop above
+  // proves for the other six, and the one that decides whether a fresh install
+  // commits. The post-0004 digest cannot be derived here: that body lives in
+  // 0004 as a `create or replace`, not in the baseline, and 0002's own
+  // assertions are what hold it.
+  // That it is pinned AT ALL is asserted by the dedicated conditional test below,
+  // which checks strictly more than a presence check would. What is checked here
+  // is the half that test cannot reach: whether the PRE-0004 branch names the
+  // digest of the body 0001 actually ships.
+  const listPeopleBody = /^CREATE FUNCTION basecamp\.list_people\([^)]*\)[\s\S]*?\n    AS (\$\w*\$)([\s\S]*?)\1;$/m.exec(
+    baseline,
+  );
+  assert.ok(listPeopleBody, "0001 no longer ships a basecamp.list_people body to hash.");
+  const listPeopleDigest = createHash("md5").update(listPeopleBody![2]).digest("hex");
+  assert.ok(
+    boundary.includes(`'${listPeopleDigest}'`),
+    `0002 names no digest matching the list_people body 0001 ships (${listPeopleDigest}). ` +
+      "On a fresh stamp 0002 runs before 0004, so this is the digest every client install " +
+      "is measured against — a stale one refuses every one of them.",
   );
 
   // The assertion that closes the audit-forgery path at install time. Matched on
@@ -590,40 +627,331 @@ test("the mutation suite's declared editor-arm case count matches the cases it r
 });
 
 /**
- * The editor arm is only an editor arm if it actually converts the files to
+ * The editor arm is only an editor arm if it actually converts the migrations to
  * CRLF and applies them whole. Both properties are one deleted line away from
- * silently becoming a second copy of the psql arm, six green cases and all —
+ * silently becoming a second copy of the psql arm, every green case and all —
  * and green-for-the-wrong-reason is the precise failure this arm was added to
  * end. The suite checks the fixtures at runtime; this checks that the code
  * which builds them is still there at all, with no database.
+ *
+ * ALL FOUR MIGRATIONS, not just the first two. The arm is supposed to differ
+ * from the psql arm in TRANSPORT and nothing else, and `0004` carries a digest
+ * pin of its own: an arm that stopped at `0002` would leave that pin covered on
+ * the maintainer's route and uncovered on the client's, which is the exact shape
+ * of the bug the arm exists to end.
  */
-test("the Editor-path arm still converts to CRLF and applies whole files", () => {
+test("the Editor-path arm still converts to CRLF and applies the same chain", () => {
   const suite = readFileSync(
     path.join(ROOT, "supabase", "tests", "boundary_mutations.sh"),
     "utf8",
   );
 
-  assert.match(
-    suite,
-    /perl -pe 's\/\\n\/\\r\\n\/' "\$REPO\/supabase\/migrations\/0001_baseline\.sql"/,
-    "the editor arm no longer builds a CRLF copy of 0001 — without it the arm re-tests the " +
-      "LF path and reports green for a route it never touched.",
+  // The chain lives in ONE array now, so this checks the array and the two things
+  // that read it, rather than four literal filenames. That is deliberately a
+  // check on the MECHANISM: the previous version named each migration, which
+  // meant it had to be edited every time one was added — exactly the maintenance
+  // the array removed, and exactly the step someone forgets.
+  const migrations = /^MIGRATIONS=\(([\s\S]*?)^\)$/m.exec(suite);
+  assert.ok(
+    migrations,
+    "boundary_mutations.sh no longer declares a MIGRATIONS array. Without it the " +
+      "chain goes back to being spelled out per arm, which is how the Editor arm " +
+      "came to apply a shorter chain than the psql arm and prove less than it claimed.",
   );
+
+  // Resolve the array against the file's own variables before comparing. Two
+  // entries are named rather than spelled out — `$TPL` because 0002 is also the
+  // file every other arm re-runs as its assertion, and `$M4` because PART 16 puts
+  // 0004 under test rather than applying it — so a plain substring check would
+  // report them missing. Resolving is also what keeps this test from needing an
+  // edit the next time an entry is given a name.
+  const shellVars = new Map<string, string>(
+    [...suite.matchAll(/^(\w+)="(\$REPO\/supabase\/migrations\/[\w.]+)"$/gm)].map(
+      (m) => [`$${m[1]}`, m[2]],
+    ),
+  );
+  const listed = migrations![1]
+    .split("\n")
+    .map((l) => l.trim().replace(/^"|"$/g, ""))
+    .filter(Boolean)
+    .map((entry) => shellVars.get(entry) ?? entry);
+
+  // Every migration the repo ships, except 0003 — it seeds categories and carries
+  // no schema, so it cannot affect anything the boundary asserts. A mirror without
+  // it is still a mirror.
+  const shipped = readdirSync(path.join(ROOT, "supabase", "migrations"))
+    .filter((f) => f.endsWith(".sql") && !f.startsWith("0003"))
+    .sort();
+  const missing = shipped.filter((f) => !listed.some((entry) => entry.endsWith(`/${f}`)));
+  assert.deepEqual(
+    missing,
+    [],
+    `MIGRATIONS does not cover ${missing.join(", ")}. Every arm builds its mirror from this ` +
+      "array, so a migration missing here is a migration no arm applies — the mirror stops " +
+      "resembling the live schema, and every assertion that migration adds goes untested " +
+      "while the suite still prints a full green total.",
+  );
+
   assert.match(
     suite,
-    /perl -pe 's\/\\n\/\\r\\n\/' "\$TPL"/,
-    "the editor arm no longer builds a CRLF copy of 0002.",
+    /perl -pe 's\/\\n\/\\r\\n\/' "\$f" > "\$\(crlf_of "\$f"\)"/,
+    "the editor arm no longer builds CRLF copies from MIGRATIONS — without that the arm " +
+      "re-tests the LF path and reports green for a route it never touched.",
   );
   // Whole-file `-c`, not `-f`: `-f` splits on `;` and sends statements one at a
-  // time. The match deliberately omits the CASE LABEL, which is prose and was
-  // reworded once already; it does still name `$EDIR` and the fixture file,
-  // because those are the thing being asserted and there is no way to check the
-  // shape without them. Rename either and this test fails — correctly, but for a
-  // reason worth knowing before you go looking for a real defect.
+  // time, which is not what the SQL Editor does.
   assert.match(
     suite,
-    /-c "\$\(cat "\$EDIR\/0001\.crlf\.sql"\)"/,
-    "the editor arm no longer applies 0001 as one whole-file statement — with `-f` it " +
+    /-c "\$\(cat "\$\(crlf_of [^)]*\)"\)"/,
+    "the editor arm no longer applies migrations as one whole-file statement — with `-f` it " +
       "would split on `;` and stop being an Editor mimic.",
   );
+  // Both the applier and the final assertion must resolve fixture names the same
+  // way. When they did not, the assertion `cat`-ed a file that did not exist, psql
+  // got an empty statement, returned success, and every mutation case in the arm
+  // reported COMMITTED — a whole arm green for the wrong reason.
+  assert.equal(
+    (suite.match(/crlf_of /g) ?? []).length >= 4,
+    true,
+    "fewer references to crlf_of than the build, the applier and the assertion need. " +
+      "If a fixture name is being written by hand again, the three can drift apart.",
+  );
+});
+
+/**
+ * `list_people` is pinned too, but by a CONDITIONAL digest, so the flat-tuple
+ * scan above cannot see it.
+ *
+ * It is the one access-model function whose body legitimately changes across
+ * the lineage — 0004 replaces it — and 0002 runs before that migration and is
+ * re-run after. The expected digest is therefore selected by whether 0004 has
+ * been applied, which keeps the accept set at size one for any given database
+ * instead of growing a list of every body ever shipped.
+ *
+ * This is the function that returns PII, so losing its pin is the most
+ * expensive one to lose silently. Asserted structurally: both digests present,
+ * and a conditional actually choosing between them.
+ */
+test("the security boundary pins list_people by a state-conditional digest", () => {
+  const boundary = readFileSync(
+    path.join(ROOT, "supabase", "migrations", "0002_security_boundary.sql"),
+    "utf8",
+  );
+
+  const tuple = /\('list_people',\s*case when to_regprocedure\(([\s\S]*?)\bend\)/m.exec(boundary);
+  assert.ok(
+    tuple,
+    "0002 no longer pins list_people by a conditional digest. It is the one access-model " +
+      "function that returns PII: unpinned, its body can be rewritten to drop the " +
+      "is_super_admin() gate and 0002 still commits.",
+  );
+
+  const digests = tuple[1].match(/'[0-9a-f]{32}'/g) ?? [];
+  assert.equal(
+    digests.length,
+    2,
+    `list_people's conditional names ${digests.length} digest(s); expected exactly 2 — ` +
+      "0001's body and 0004's. A third means the accept set is growing into a list, which is " +
+      "the failure mode the conditional was chosen to avoid.",
+  );
+  assert.equal(
+    new Set(digests).size,
+    2,
+    "list_people's two branches name the SAME digest, so the conditional decides nothing.",
+  );
+  assert.match(
+    tuple[1],
+    /log_privileged_action/,
+    "the conditional no longer keys off log_privileged_action, the object 0004 creates — " +
+      "so it cannot tell whether 0004 has been applied.",
+  );
+});
+
+/**
+ * PART 14's counter, held to the same standard as EXPECTED_CASES above.
+ *
+ * Its cases are a different KIND — they run real statements as `authenticated`
+ * and require the database to refuse, rather than asking whether 0002 refuses a
+ * broken schema — so they use their own runner and their own counter. That
+ * separation is deliberate, but it means a lost case there is invisible to the
+ * check above, which is exactly the silent-reversion failure both counters
+ * exist to prevent.
+ */
+test("the runtime-refusal suite's declared case count matches the cases it runs", () => {
+  const suite = readFileSync(
+    path.join(ROOT, "supabase", "tests", "boundary_mutations.sh"),
+    "utf8",
+  );
+
+  const declared = /^EXPECTED_RLS_CASES=(\d+)$/m.exec(suite);
+  assert.ok(declared, "boundary_mutations.sh must declare EXPECTED_RLS_CASES=<n>");
+
+  // Same trailing-quote discipline as above: it separates the invocations from
+  // the `run_rls_assert () {` definition.
+  const invocations = (suite.match(/^run_rls_assert "/gm) ?? []).length;
+
+  assert.equal(
+    invocations,
+    Number(declared[1]),
+    `EXPECTED_RLS_CASES says ${declared[1]} but the file makes ${invocations} run_rls_assert calls.`,
+  );
+});
+
+/**
+ * PART 16's counter — 0004's own post-conditions, as the file under test.
+ *
+ * Every case in PARTS 1-12 re-runs 0002, so 0004's assertions had no coverage
+ * at all: the ones guarding objects 0004 itself recreates could never fail, and
+ * nobody would have noticed. A fourth counter is the price of a fourth arm.
+ */
+test("the 0004-target suite's declared case count matches the cases it runs", () => {
+  const suite = readFileSync(
+    path.join(ROOT, "supabase", "tests", "boundary_mutations.sh"),
+    "utf8",
+  );
+  const declared = /^EXPECTED_M4_CASES=(\d+)$/m.exec(suite);
+  assert.ok(declared, "boundary_mutations.sh must declare EXPECTED_M4_CASES=<n>");
+  const invocations = (suite.match(/^run_0004_case "/gm) ?? []).length;
+  assert.equal(
+    invocations,
+    Number(declared[1]),
+    `EXPECTED_M4_CASES says ${declared[1]} but the file makes ${invocations} run_0004_case calls.`,
+  );
+});
+
+/**
+ * The assertions that were DUPLICATED into 0002 must stay there.
+ *
+ * Duplicated, not moved, and the distinction matters both ways. In 0004 each of
+ * these runs immediately after the same file created the thing it checks, so on
+ * a fresh stamp it is a tautology — and each was PROVEN to let a real attack
+ * through on that path: a gutted audit writer, dropped vocabulary CHECKs, a
+ * loosened provenance pin. The copy in 0002 is what makes them able to fail,
+ * because 0002 is re-run by the mutation suite and by anyone re-applying it.
+ *
+ * The 0004 copies are NOT dead, which is why this test does not ask for their
+ * removal: PART 16 breaks each one BEFORE 0004 runs and requires 0004 to refuse,
+ * so they bite on the one path 0002 cannot see — a database that never had 0004
+ * applied. Edit both or neither; two copies of one invariant that drift are
+ * worse than one copy in the wrong file.
+ */
+test("0002 carries the assertions that 0004 cannot meaningfully make", () => {
+  const boundary = readFileSync(
+    path.join(ROOT, "supabase", "migrations", "0002_security_boundary.sql"),
+    "utf8",
+  );
+  const required: readonly (readonly [string, string])[] = [
+    [
+      "body differs from the one this lineage ships",
+      "a gutted audit writer with the required phrases left behind as COMMENTS defeated the " +
+        "substring test that used to live here, so the body is pinned by digest instead",
+    ],
+    [
+      "access_audit lost a vocabulary CHECK",
+      "both CHECKs could be dropped and 0002 still printed 'verified'",
+    ],
+    [
+      "no longer pins granted_by",
+      "a loosened policy let an administrator name a colleague as the grantor",
+    ],
+    [
+      "the category depth cap is missing or disabled",
+      "the catalog is browser-writable, and every reader assumes a flat-or-one-deep shape",
+    ],
+    [
+      "no longer checks the UPWARD direction",
+      "checking only downward lets a three-level tree be built from the bottom up",
+    ],
+    [
+      "parent_not_self is gone",
+      "a self-parented category is a 1-cycle that ON DELETE RESTRICT makes undeletable forever",
+    ],
+    [
+      "no longer consults category_or_child_has_grant",
+      "a container parent goes invisible while its children stay visible, leaving the client a parent_id it cannot resolve",
+    ],
+    [
+      "category_or_child_has_grant''s body differs",
+      "existence, SECURITY DEFINER and the policy's mention are ALL satisfied by a body of " +
+        "`select true`, which discloses every category to a user with no grants — proven to " +
+        "commit before this pin existed",
+    ],
+  ];
+  for (const [needle, why] of required) {
+    assert.ok(
+      boundary.includes(needle),
+      `0002 no longer asserts "${needle}" — ${why}. It cannot live in 0004: there it runs ` +
+        "directly after the statement that creates what it checks, so it can never fail.",
+    );
+  }
+});
+
+/**
+ * PART 15's cases must keep proving what they claim about the catalog.
+ *
+ * The catalog screen writes `basecamp.categories` straight from a browser on
+ * the caller's token, so the only things standing between a signed-in
+ * non-administrator and the catalog are a policy and two triggers. Named checks
+ * rather than a count alone: a case dropped as "redundant" would take a
+ * security property with it, and the zero-row cases in particular look
+ * redundant to anyone who has not been bitten by RLS answering 204.
+ */
+test("the runtime suite still proves the catalog's refusals", () => {
+  const suite = readFileSync(
+    path.join(ROOT, "supabase", "tests", "boundary_mutations.sh"),
+    "utf8",
+  );
+  for (const needle of [
+    "a non-admin cannot CREATE a category",
+    "a category a non-admin can see SURVIVES their delete",
+    "a non-admin RENAMING a category changes ZERO rows",
+    "a category cannot be made its own parent",
+    "a granted viewer can read the PARENT of a subcategory they can see",
+    "an EMPTY category with no granted children stays hidden",
+    "the depth cap refuses a THIRD level",
+    "the depth cap refuses building a third level BOTTOM-UP",
+    "deleting a category that still holds a SUBCATEGORY is refused",
+    "deleting a category that still holds an ENTRY is refused",
+    // The POSITIVE controls. Every case above asserts a refusal, and a
+    // completely broken schema refuses everything — so these are what stop a
+    // revoked grant from reading as security. They are also the two most likely
+    // to be pruned by someone who reads them as not testing anything.
+    "an admin CAN create a category and nest one level under it",
+    "an admin CAN rename and delete an empty category",
+  ]) {
+    assert.ok(
+      suite.includes(needle),
+      `boundary_mutations.sh no longer contains the case "${needle}". The catalog is ` +
+        "writable from the browser by any signed-in person, so a policy or trigger that stops " +
+        "being tested is a security property that stops being proven.",
+    );
+  }
+});
+
+/**
+ * The runtime suite must actually exercise the privilege 0004 opens.
+ *
+ * A count alone does not say the cases are the RIGHT ones. Self-promotion is
+ * the specific hole that granting `authenticated` INSERT on the trust root
+ * would open, and it is the case most likely to be dropped as redundant by
+ * someone reading only the schema assertions — which cannot catch it, because
+ * after 0004 the privilege being there is correct.
+ */
+test("the runtime-refusal suite still tests self-promotion and the last-admin guard", () => {
+  const suite = readFileSync(
+    path.join(ROOT, "supabase", "tests", "boundary_mutations.sh"),
+    "utf8",
+  );
+  for (const needle of [
+    "a non-admin cannot promote THEMSELVES",
+    "a non-admin cannot delete an existing administrator",
+    "even an admin cannot delete the LAST administrator",
+  ]) {
+    assert.ok(
+      suite.includes(needle),
+      `boundary_mutations.sh no longer contains the case "${needle}" — ` +
+        "0004 grants authenticated INSERT/DELETE on the trust root, and this is what proves " +
+        "the POLICY rather than the privilege is what refuses a non-administrator.",
+    );
+  }
 });

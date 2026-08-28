@@ -6,18 +6,24 @@ import type { Grant, GrantCategory, Member, TypeGrant } from "../types/admin.ts"
 
 import {
   CREATE_TYPE_KEY,
+  adminRoleKey,
+  banKey,
+  categoryLabel,
   deleteTypeKey,
   describeError,
+  describeTrustRootRefusal,
   effectiveEntryCount,
   grantKey,
   indexGrants,
   indexMembers,
   indexTypeGrants,
   initialsFromEmail,
+  isBanned,
   isTransportFailure,
   memberKey,
   pendingKey,
   resolveAccess,
+  signInLinkKey,
   typeGrantKey,
 } from "./adminAccess.ts";
 
@@ -146,6 +152,7 @@ test("effectiveEntryCount resolves category inheritance the same way the cells d
       id: CAT,
       slug: "cat",
       name: "Cat",
+      parent_id: null,
       entries: [
         { id: ENTRY, display_name: "One" },
         { id: OTHER_ENTRY, display_name: "Two" },
@@ -155,6 +162,7 @@ test("effectiveEntryCount resolves category inheritance the same way the cells d
       id: OTHER_CAT,
       slug: "other",
       name: "Other",
+      parent_id: null,
       entries: [{ id: "cccccccc-cccc-cccc-cccc-cccccccccccc", display_name: "Three" }],
     },
   ];
@@ -274,7 +282,7 @@ test("neither source can subtract from the other", () => {
 
 test("effectiveEntryCount counts each entry once across both sources", () => {
   const cats: GrantCategory[] = [{
-    id: CAT, slug: "cat", name: "Cat",
+    id: CAT, slug: "cat", name: "Cat", parent_id: null,
     entries: [{ id: ENTRY, display_name: "One" }, { id: OTHER_ENTRY, display_name: "Two" }],
   }];
   const m = indexMembers([member(USER, TYPE)]);
@@ -371,4 +379,102 @@ test("isTransportFailure separates 'the database refused' from 'we do not know'"
   // routed exactly this case to the no-resync branch.
   assert.equal(isTransportFailure(null), true);
   assert.equal(isTransportFailure({}), true);
+});
+
+// ---------------------------------------------------------------------------
+// Account lifecycle — added with the admin user-management work (0004)
+// ---------------------------------------------------------------------------
+
+test("the lifecycle keys are prefixed, so they cannot collide with a grant on the same person", () => {
+  // All of these share ONE pending Set. Without distinct prefixes a ban and a
+  // grant for the same user claim the same slot and the second is dropped as a
+  // duplicate — the failure signInLinkKey's comment already records.
+  const id = "11111111-1111-1111-1111-111111111111";
+  const keys = [adminRoleKey(id), banKey(id), signInLinkKey(id), memberKey(id)];
+  assert.equal(new Set(keys).size, keys.length);
+  for (const key of keys) assert.ok(key.includes(":"), key);
+});
+
+test("a person with no ban is not banned", () => {
+  assert.equal(isBanned({ banned_until: null }), false);
+});
+
+test("a ban far in the future is a ban", () => {
+  const future = new Date(Date.now() + 86_400_000).toISOString();
+  assert.equal(isBanned({ banned_until: future }), true);
+});
+
+test("a LAPSED ban is not a ban — the timestamp is compared, not merely present", () => {
+  // GoTrue does not clear banned_until when a ban expires. A truthiness test
+  // would mark someone suspended forever after one temporary suspension set by
+  // hand in the dashboard.
+  const past = new Date(Date.now() - 86_400_000).toISOString();
+  assert.equal(isBanned({ banned_until: past }), false);
+});
+
+test("an unparseable banned_until is not read as a ban", () => {
+  assert.equal(isBanned({ banned_until: "not a date" }), false);
+});
+
+test("the last-administrator refusal becomes an instruction, not a SQLSTATE", () => {
+  const message = describeTrustRootRefusal({
+    code: "2F003",
+    message: "refusing to delete the last super_admin (abc) — the catalog would be left with no administrator",
+  });
+  assert.ok(message);
+  assert.match(message, /last administrator/i);
+  // It must say what to DO. The person clicking cannot act on "restrict_violation".
+  assert.match(message, /make someone else an administrator first/i);
+});
+
+test("an RLS refusal on the trust root is explained as permission, not as breakage", () => {
+  const message = describeTrustRootRefusal({ code: "42501", message: "permission denied" });
+  assert.ok(message);
+  assert.match(message, /permission/i);
+});
+
+test("an unrecognised error returns null, so the caller does not invent an explanation", () => {
+  // The generic failedWrite path is the right answer for anything not on the
+  // recognised list; claiming a trust-root cause for an unrelated fault would
+  // send the reader looking in the wrong place.
+  assert.equal(describeTrustRootRefusal({ code: "23505", message: "duplicate key" }), null);
+  assert.equal(describeTrustRootRefusal(null), null);
+});
+
+// ---------------------------------------------------------------------------
+// categoryLabel — naming a subcategory on the screen that decides access
+// ---------------------------------------------------------------------------
+
+test("a top-level category is labelled with its bare name", () => {
+  const byId = new Map([["p", { name: "Finance" }]]);
+  assert.equal(categoryLabel({ name: "Finance", parent_id: null }, byId), "Finance");
+});
+
+test("a subcategory is prefixed with its parent, because only slugs are unique", () => {
+  // `uniqueSlug` dedupes slugs, not names — two subcategories genuinely can
+  // both be called "Reports", and this is the screen where picking the wrong
+  // one grants the wrong people the wrong thing.
+  const byId = new Map([["p", { name: "Finance" }]]);
+  assert.equal(
+    categoryLabel({ name: "Reports", parent_id: "p" }, byId),
+    "Finance › Reports",
+  );
+});
+
+test("two same-named subcategories under different parents are distinguishable", () => {
+  const byId = new Map([
+    ["fin", { name: "Finance" }],
+    ["ops", { name: "Operations" }],
+  ]);
+  const a = categoryLabel({ name: "Reports", parent_id: "fin" }, byId);
+  const b = categoryLabel({ name: "Reports", parent_id: "ops" }, byId);
+  assert.notEqual(a, b);
+});
+
+test("an invisible parent yields the bare name, not a dangling separator", () => {
+  // Reachable for real: a subcategory this administrator can see, under a
+  // parent they cannot. "› Reports" would read as a rendering fault.
+  const got = categoryLabel({ name: "Reports", parent_id: "not-visible" }, new Map());
+  assert.equal(got, "Reports");
+  assert.doesNotMatch(got, /›/);
 });

@@ -23,7 +23,9 @@ import {
   enumLabel,
   withCurrent,
   type EntryDraft,
+  categoryTree,
 } from "@/lib/catalogAdmin";
+import { categoryLabel } from "@/lib/adminAccess";
 import { NAV_GROUP_LABEL, NAV_GROUP_ORDER, type AdminCategory } from "@/types/admin";
 
 /**
@@ -77,6 +79,10 @@ export default function EntryDialog({
    */
   onSubmit: (draft: EntryDraft) => Promise<boolean>;
 }) {
+  // Every category by id. The admin screen holds them all — unlike the grant
+  // screens, where a container parent is filtered out — so this needs no prop.
+  const categoryNames = new Map(categories.map((c) => [c.id, { name: c.name }]));
+
   const [draft, setDraft] = useState<EntryDraft>(initial);
   // Re-seed when the dialog is opened on a different row. React's documented
   // adjust-state-on-prop-change pattern — a render-phase update guarded by
@@ -134,11 +140,24 @@ export default function EntryDialog({
             required
             fullWidth
           >
-            {categories.map((c) => (
-              <MenuItem key={c.id} value={c.id}>
-                {c.name}
-              </MenuItem>
-            ))}
+            {/* Flattened through `categoryTree` rather than listed raw, so a
+                subcategory appears under its own parent and indented. A tile
+                can live in either — `entries.category_id` points at any
+                category row — but a flat alphabetical list would give no hint
+                which of two similarly-named options is the nested one. */}
+            {categoryTree(categories).flatMap(({ category, children }) => [
+              <MenuItem key={category.id} value={category.id}>
+                {category.name}
+              </MenuItem>,
+              // Indent AND breadcrumb. The indent alone leaves two subcategories
+              // both called "Reports" indistinguishable, and this is the primary
+              // path for deciding where a tile lives.
+              ...children.map((child) => (
+                <MenuItem key={child.id} value={child.id} sx={{ pl: 4 }}>
+                  {categoryLabel(child, categoryNames)}
+                </MenuItem>
+              )),
+            ])}
           </TextField>
 
           <TextField

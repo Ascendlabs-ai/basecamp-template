@@ -8,11 +8,29 @@ export type Person = {
    * Whether this person is in `basecamp.super_admins` — this schema's own trust
    * root, so it says nothing about any other app sharing the project.
    *
-   * READ-ONLY in the UI, deliberately. There is no path here that writes the
-   * trust root: promoting or demoting an administrator is a SQL statement, and
-   * the roster surfaces the fact without offering to change it.
+   * WRITABLE from the roster since 0004, which granted `authenticated` the
+   * INSERT and DELETE privileges whose policies 0001 had already written. The
+   * write goes straight from the browser on the administrator's own token, like
+   * every other write on this screen: the INSERT policy's WITH CHECK gates on
+   * the CALLER, so a non-administrator cannot promote themselves, and the
+   * last-row trigger refuses the demotion that would empty the table.
    */
   is_super_admin: boolean;
+  /**
+   * When their sign-in ban expires, or null if they are not banned. From
+   * `auth.users.banned_until`, super_admin-gated like the rest of this shape.
+   *
+   * A ban is a far-future timestamp rather than a boolean because GoTrue models
+   * it as a duration; anything non-null and in the future means banned. Read it
+   * through `isBanned()` rather than testing it inline.
+   */
+  banned_until: string | null;
+  /**
+   * The type they hold, or null. Scalar because `basecamp.members` carries
+   * UNIQUE (user_id) — a person holds at most one type, asserted in 0004 so the
+   * roster cannot silently become the wrong shape.
+   */
+  member_type_id: string | null;
 };
 
 /** One row of basecamp.access_audit. Append-only; the app never writes it. */
@@ -20,8 +38,20 @@ export type AuditRow = {
   id: number;
   occurred_at: string;
   actor_email: string | null;
-  action: "grant" | "revoke";
-  source_table: "access_grants" | "type_grants" | "super_admins" | "members" | "unknown";
+  /**
+   * grant/revoke come from the four audit triggers. The four account-lifecycle
+   * verbs are written only by `basecamp.log_privileged_action`, the definer RPC
+   * the admin API routes call — no client role holds INSERT on this table.
+   */
+  action: "grant" | "revoke" | "invite" | "reissue_link" | "ban" | "unban" | "adopt";
+  source_table:
+    | "access_grants"
+    | "type_grants"
+    | "super_admins"
+    | "members"
+    /** Supabase Auth, not a basecamp table: the account-lifecycle events. */
+    | "auth_admin"
+    | "unknown";
   subject_label: string | null;
   object_kind: "entry" | "category" | "type" | null;
   object_label: string | null;
@@ -37,6 +67,15 @@ export type GrantCategory = {
   id: string;
   slug: string;
   name: string;
+  /**
+   * The category this one sits under, or null.
+   *
+   * GRANTS DO NOT INHERIT. `category_has_grant()` is flat: granting a parent
+   * grants nothing about its subcategories, and each is its own column in the
+   * matrix. This field exists so the screens can LABEL a subcategory with its
+   * parent — not so anything infers access from it.
+   */
+  parent_id: string | null;
   entries: GrantTarget[];
 };
 
@@ -77,7 +116,14 @@ export type MemberType = {
   name: string;
   description: string | null;
   is_admin: boolean;
-  /** Seeded types the app refers to by slug; the database refuses to delete them. */
+  /**
+   * Structural types the database refuses to DELETE — the trigger
+   * `basecamp_member_types_no_system_delete` enforces it. `0004` seeds three
+   * (staff, contractor, client) and marks them, because Add person needs at
+   * least one type and a stamp with none ships a screen that cannot be used.
+   * Renaming is deliberately still allowed: the label is cosmetic and grants
+   * attach to the row. Nothing in this app looks a type up by slug.
+   */
   is_system: boolean;
   sort_order: number;
 };
@@ -185,6 +231,14 @@ export type AdminCategory = {
   name: string;
   description: string;
   sort_order: number;
+  /**
+   * The category this one sits under, or null for a top-level category.
+   *
+   * Nesting is one level deep and the DATABASE is what enforces that —
+   * `basecamp.enforce_category_depth()` in 0005, in both directions. This field
+   * is the shape the screen renders; it is not the rule.
+   */
+  parent_id: string | null;
 };
 
 /**

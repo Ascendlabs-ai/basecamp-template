@@ -11,7 +11,7 @@ import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
-import { grantKey, pendingKey, resolveAccess } from "@/lib/adminAccess";
+import { categoryLabel, grantKey, pendingKey, resolveAccess } from "@/lib/adminAccess";
 import type {
   AccessSource,
   Grant,
@@ -64,6 +64,7 @@ const columnTemplate = (n: number) =>
 export default function AccessMatrix({
   people,
   categories,
+  categoryNames,
   grantIndex,
   typeGrantIndex,
   memberIndex,
@@ -73,6 +74,11 @@ export default function AccessMatrix({
 }: {
   people: Person[];
   categories: GrantCategory[];
+  /**
+   * Every category by id, including container parents absent from `categories`.
+   * Labels only — it never decides access.
+   */
+  categoryNames: Map<string, { name: string }>;
   grantIndex: Map<string, Grant>;
   typeGrantIndex: Map<string, TypeGrant>;
   memberIndex: Map<string, Member>;
@@ -90,9 +96,13 @@ export default function AccessMatrix({
   const columns = useMemo(
     () =>
       shownCategories.flatMap((c) =>
-        c.entries.map((e) => ({ entry: e, categoryId: c.id, categoryName: c.name })),
+        c.entries.map((e) => ({
+          entry: e,
+          categoryId: c.id,
+          categoryName: categoryLabel(c, categoryNames),
+        })),
       ),
-    [shownCategories],
+    [shownCategories, categoryNames],
   );
 
   // Roving tabindex. role="grid" with one tab stop and arrow-key movement
@@ -169,12 +179,16 @@ export default function AccessMatrix({
             individually; type access is changed under Types.
           </Typography>
         </Box>
+        {/* GRANTS DO NOT INHERIT, and the label is a breadcrumb, which is the
+            rendering that most implies they do. So the rule is stated in words
+            rather than left to the punctuation. */}
         <TextField
           select
           size="small"
           label="Columns"
           value={categoryId}
           onChange={(e) => setCategoryId(e.target.value)}
+          helperText="A category grant covers only its own entries — subcategories are granted separately."
           sx={{ minWidth: 220 }}
         >
           <MenuItem value="all">
@@ -182,7 +196,7 @@ export default function AccessMatrix({
           </MenuItem>
           {categories.map((c) => (
             <MenuItem key={c.id} value={c.id}>
-              {c.name} ({c.entries.length})
+              {categoryLabel(c, categoryNames)} ({c.entries.length})
             </MenuItem>
           ))}
         </TextField>

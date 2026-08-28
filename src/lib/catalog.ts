@@ -17,12 +17,47 @@ import type { CatalogCategory } from "@/types/catalog";
  * `use cache` or `unstable_cache` — which would serve one user's rows to
  * everyone, because visibility here comes from RLS and not from the query.
  */
+/**
+ * ONE RULE: keep a category that has something visible inside it.
+ *
+ * "Inside it" means its own entries, OR — since `0005` — a subcategory that has
+ * some. A container parent has no entries of its own EVER, so the plain
+ * `entries.length > 0` test drops it and leaves its children rendered as
+ * unrelated top-level blocks, with the grouping the administrator built
+ * invisible.
+ *
+ * THE INVARIANT THIS MUST NOT BREAK is the one both callers exist for: a
+ * category with nothing visible inside it must not render, because its name and
+ * description would be disclosed to somebody granted nothing in it. A parent
+ * kept here always has a visible child, so there IS something inside it the
+ * viewer can see. `category_or_child_has_grant` (0005) is the database half of
+ * the same rule.
+ *
+ * WHY IT IS A FUNCTION. Both callers had their own copy, and the comment on the
+ * second one said out loud what the risk was — "Two filters, one rule; taught to
+ * only one of them is how they drift" — while being the second copy. The grant
+ * filter and the search filter must agree, so they now read the same code
+ * rather than the same paragraph.
+ *
+ * Takes rows whose `entries` have ALREADY been filtered down to what should
+ * count: grants for `visibleCategories`, query matches for `filterCatalog`.
+ */
+function keepContainerParents<T extends { id: string; parent_id: string | null; entries?: unknown[] | null }>(
+  rows: T[],
+): T[] {
+  const has = (c: T) => (c.entries?.length ?? 0) > 0;
+  const parentsWithVisibleChildren = new Set(
+    rows.filter((c) => has(c) && c.parent_id).map((c) => c.parent_id as string),
+  );
+  return rows.filter((c) => has(c) || parentsWithVisibleChildren.has(c.id));
+}
+
 export function visibleCategories(rows: CatalogCategory[] | null | undefined): {
   visible: CatalogCategory[];
   categoryCount: number;
   entryCount: number;
 } {
-  const visible = (rows ?? []).filter((c) => (c.entries?.length ?? 0) > 0);
+  const visible = keepContainerParents(rows ?? []);
   return {
     visible,
     categoryCount: visible.length,
@@ -54,13 +89,17 @@ export function filterCatalog(
   const needle = (query ?? "").trim().toLowerCase();
   if (!needle) return categories;
 
-  return categories
-    .map((c) => ({
-      ...c,
-      entries: (c.entries ?? []).filter((e) =>
-        [e.display_name, e.technical_name, e.description, e.slug, e.owner]
-          .some((field) => field?.toLowerCase().includes(needle)),
-      ),
-    }))
-    .filter((c) => c.entries.length > 0);
+  const matched = categories.map((c) => ({
+    ...c,
+    entries: (c.entries ?? []).filter((e) =>
+      [e.display_name, e.technical_name, e.description, e.slug, e.owner]
+        .some((field) => field?.toLowerCase().includes(needle)),
+    ),
+  }));
+
+  // A CONTAINER PARENT SURVIVES ITS CHILD'S MATCH — the same rule the grant
+  // filter applies, now literally the same code. Without it the grouping was
+  // present and then vanished on the first keystroke, with its subcategory
+  // promoted to an un-nested heading.
+  return keepContainerParents(matched);
 }
