@@ -25,7 +25,7 @@ import { SUPABASE_URL } from "./env";
  * RLS policy — identities live in `auth.users`, which the app does not own — so
  * one privileged path exists, and it is bounded three ways:
  *
- *   1. IT IS AUTHORISED BY THE DATABASE, NOT BY THIS FILE. `requireSuperAdmin`
+ *   1. IT IS AUTHORIZED BY THE DATABASE, NOT BY THIS FILE. `requireSuperAdmin`
  *      asks Postgres `basecamp.is_super_admin()` on the CALLER'S OWN TOKEN. The
  *      answer comes from the same trust root every RLS policy consults. This is
  *      not "a role check in TypeScript" (CLAUDE.md's phrase for a lock on the
@@ -108,7 +108,7 @@ export type AdminFacade = {
 
 };
 
-export type Authorised = {
+export type Authorized = {
   /**
    * Anon-key client on the caller's cookies. Every `basecamp` read and write in
    * a route handler goes through THIS, so RLS decides it and the audit triggers
@@ -144,7 +144,7 @@ export type Denied = {
 /**
  * Generic over the success shape so it narrows both `requireSuperAdmin` and
  * `logPrivilegedAction` — the two return different successes and share this one
- * failure. A signature pinned to `Authorised` made the audit call site a type
+ * failure. A signature pinned to `Authorized` made the audit call site a type
  * error, and widening it to `unknown` would have stopped narrowing at all.
  */
 export function isDenied<T extends object>(result: T | Denied): result is Denied {
@@ -318,7 +318,7 @@ function buildFacade(client: SupabaseClient): AdminFacade {
  * an RPC that errors is 500 rather than being read as either. The last one
  * matters — an unreachable database must not be mistaken for a granted answer.
  */
-export async function requireSuperAdmin(): Promise<Authorised | Denied> {
+export async function requireSuperAdmin(): Promise<Authorized | Denied> {
   const caller = await createClient();
 
   // CONCURRENT, not sequential. Neither call consumes the other's result —
@@ -404,7 +404,7 @@ export async function requireSuperAdmin(): Promise<Authorised | Denied> {
  * WITHOUT that deliberate, audited step first.
  */
 export async function belongsToThisApp(
-  caller: Authorised["caller"],
+  caller: Authorized["caller"],
   userId: string,
 ): Promise<"yes" | "no" | "unknown"> {
   const [member, admin] = await Promise.all([
@@ -455,7 +455,7 @@ export async function belongsToThisApp(
  * `Denied` otherwise, so the call site reads exactly like `requireSuperAdmin`.
  */
 export async function requireMemberOfThisApp(
-  caller: Authorised["caller"],
+  caller: Authorized["caller"],
   userId: string,
 ): Promise<null | Denied> {
   const membership = await belongsToThisApp(caller, userId);
@@ -500,7 +500,7 @@ export type PrivilegedAction = "invite" | "reissue_link" | "ban" | "unban" | "ad
  * email labels up itself rather than accepting them.
  */
 export async function logPrivilegedAction(
-  caller: Authorised["caller"],
+  caller: Authorized["caller"],
   event: { action: PrivilegedAction; subjectUserId: string },
 ): Promise<{ ok: true } | Denied> {
   const { error } = await caller.rpc("log_privileged_action", {

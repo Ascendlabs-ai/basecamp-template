@@ -86,11 +86,11 @@ test("trust-root changes are described as administrator changes", () => {
   );
 });
 
-test("an unrecognised source table is flagged, not rendered as an ordinary grant", () => {
+test("an unrecognized source table is flagged, not rendered as an ordinary grant", () => {
   // The database CHECK allows 'unknown' so that a trigger on an unmodelled
   // table is RECORDED rather than rejected. That only helps if it is visible.
   const text = describeAuditRow(row({ source_table: "unknown" }));
-  assert.match(text, /unrecognised table/);
+  assert.match(text, /unrecognized table/);
   assert.doesNotMatch(text, /^granted/);
 });
 

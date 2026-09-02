@@ -19,14 +19,16 @@ import { explainReadError } from "@/lib/postgrestMessage";
 import { isSuperAdmin } from "@/lib/isSuperAdmin";
 import { createClient } from "@/lib/supabase/server";
 import { ENTRY_COLUMNS, type CatalogCategory } from "@/types/catalog";
-import { APP_NAME, CATALOG_HEADING } from "@/lib/brand";
+import { getBranding } from "@/lib/brandingServer";
+import type { Metadata } from "next";
 
 // The catalog is per-user by RLS, so it must never be cached across requests.
 export const dynamic = "force-dynamic";
 
-export const metadata = {
-  title: APP_NAME,
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const branding = await getBranding();
+  return { title: branding.displayName };
+}
 
 export default async function HomePage({
   searchParams,
@@ -41,7 +43,7 @@ export default async function HomePage({
   } = await supabase.auth.getUser();
 
   // Middleware already redirects unauthenticated requests. This is the
-  // defence-in-depth copy: if the matcher is ever narrowed, this page must
+  // defense-in-depth copy: if the matcher is ever narrowed, this page must
   // still refuse to render rather than query as anon.
   if (!user) redirect("/login");
 
@@ -54,7 +56,7 @@ export default async function HomePage({
   // on the catalog select, and this is the app's hottest page — the admin
   // screen already learned this lesson, and a fix written in the same commit
   // reintroduced the serial await here.
-  const [{ data, error, count }, entryCountRes, role] = await Promise.all([
+  const [{ data, error, count }, entryCountRes, role, branding] = await Promise.all([
     supabase
       .from("categories")
       .select(`id, slug, name, description, sort_order, parent_id, entries(${ENTRY_COLUMNS})`, {
@@ -75,6 +77,7 @@ export default async function HomePage({
     // when there are none. Deduplicated against the layout's identical question,
     // so it costs no extra round trip.
     isSuperAdmin(),
+    getBranding(),
   ]);
 
   // Truncation is silent in the response and detectable only by count.
@@ -294,7 +297,7 @@ export default async function HomePage({
                 component="h1"
                 sx={{ fontWeight: 700, letterSpacing: "-0.5px" }}
               >
-                {CATALOG_HEADING}
+                {branding.displayName} apps
               </Typography>
               <Typography variant="body1" sx={{ color: "text.secondary", maxWidth: "70ch" }}>
                 {entryCount} {entryCount === 1 ? "entry" : "entries"} across{" "}

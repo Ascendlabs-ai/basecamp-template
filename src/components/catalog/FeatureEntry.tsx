@@ -44,7 +44,7 @@ export default function FeatureEntry({
         borderColor: "divider",
         borderLeft: 4,
         // Blue accent ONLY when launchable — Celestial Blue is the app's launch
-        // colour, so a blue rule on a reference entry would imply an action it
+        // color, so a blue rule on a reference entry would imply an action it
         // does not have. A non-launchable feature gets a neutral rule.
         borderLeftColor: launchable ? "primary.main" : "text.secondary",
         backgroundColor: "background.paper",

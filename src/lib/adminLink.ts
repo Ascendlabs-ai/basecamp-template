@@ -85,7 +85,7 @@ export function isEmailShaped(value: string): boolean {
   return domain.includes(".") && !domain.startsWith(".") && !domain.endsWith(".");
 }
 
-/** Normalise before sending to GoTrue, which lowercases addresses itself. */
+/** Normalize before sending to GoTrue, which lowercases addresses itself. */
 export function normaliseEmail(value: string): string {
   return value.trim().toLowerCase();
 }

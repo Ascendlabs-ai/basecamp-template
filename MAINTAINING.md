@@ -167,7 +167,7 @@ about `setup_step`, the preflight or the whitelist split beyond the shape checks
 
 `CLAUDE.md`, `issues.md` and `.claude/` are **shipped deliberately** and are
 **this repository's own**, not upstream's. They are the client-facing versions:
-the Build Kit walkthrough teaches a client to recognise `CLAUDE.md` and
+the Build Kit walkthrough teaches a client to recognize `CLAUDE.md` and
 `issues.md` on sight, and then has them open `CLAUDE.md` and read it aloud. Until
 they shipped, that step sent every client to a file that was not there.
 
@@ -176,7 +176,7 @@ Two consequences for a re-extraction, both easy to get wrong:
 - **Take this repo's side for all three, always.** They are not app files and
   step 3's "upstream's side where upstream has genuinely improved the logic" does
   not apply — upstream's copies describe the private application, name its
-  organisation, and would trip `templateHygiene.test.ts` on the identity
+  organization, and would trip `templateHygiene.test.ts` on the identity
   patterns. Do not three-way merge them; keep them.
 - **`.claude/` is vendored, not authored here.** It is copied verbatim from the
   Build Kit's shared guardrails set, which itself vendors it from the private
@@ -238,7 +238,7 @@ time**, and `0001`'s own header repeats this list:
    them first — no DEFAULT, no CHECK, no function body. Update
    `supabase/seed.example.sql` and `src/lib/__fixtures__/catalog.json` to match.
 2. **Rewrite every `COMMENT ON` string** that names the originating
-   organisation, its issue tracker, its probe suite, its exporter, or a
+   organization, its issue tracker, its probe suite, its exporter, or a
    timestamped migration version. These land permanently in every client
    database.
 
@@ -307,7 +307,7 @@ npm ci && npm test && npx tsc --noEmit && npm run lint && npm run build
 
 `src/lib/templateHygiene.test.ts` is the guard that matters most here: a
 three-way merge takes upstream hunks verbatim wherever this repo had no
-conflicting edit, so an upstream comment naming the organisation, its database,
+conflicting edit, so an upstream comment naming the organization, its database,
 or a real person can arrive **silently**. That test fails on it. Do not add an
 allowlist entry to make it pass — rewrite the prose.
 

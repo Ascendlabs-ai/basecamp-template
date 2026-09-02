@@ -630,7 +630,7 @@ begin
     -- forget a variant.
     --
     -- All three properties are checked — both directions and the parent lock.
-    -- PART 14 proves the behaviour at runtime; THIS is the live-drift check,
+    -- PART 14 proves the behavior at runtime; THIS is the live-drift check,
     -- and the only one that runs against a deployed database.
     -- THE SELF-PARENT GUARD IS STRIPPED BEFORE LOOKING FOR THE UPWARD CHECK,
     -- and this is a third hiding place of exactly the kind the paragraph above

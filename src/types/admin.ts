@@ -251,6 +251,9 @@ export type AdminCategory = {
  */
 export type AdminEntry = import("@/types/catalog").CatalogEntry & {
   category_id: string;
+  app_settings: import("@/lib/appConfig").AppSettings | null;
+  oauth_clients: import("@/lib/appConfig").OAuthClientConfig[];
+  access_grants: Grant[];
   /**
    * Which sidebar group the entry sits in, or NULL for "not in the sidebar".
    *

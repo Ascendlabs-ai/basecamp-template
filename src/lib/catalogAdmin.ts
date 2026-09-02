@@ -4,6 +4,7 @@
 // and then fails at test time with ERR_MODULE_NOT_FOUND.
 import type { EntryStatus, EntryType } from "@/types/catalog";
 import type { NavGroup } from "@/types/admin";
+import type { AppAccessMode, AppAuthMode } from "./appConfig.ts";
 
 /**
  * Catalog-administration logic: slugs, the shape of an entry before it is
@@ -21,11 +22,11 @@ import type { NavGroup } from "@/types/admin";
  * is LOOSENED in the schema and not here, this module refuses something the
  * database would have accepted — annoying, but still nothing wrong is stored.
  * Neither direction can write a row the database would reject, because this
- * code never gets a vote on that. Do not "optimise" that property away by
+ * code never gets a vote on that. Do not "optimize" that property away by
  * moving a rule out of the schema and into here.
  *
  * It lives in `src/lib/` because the repo convention is that executable
- * behaviour with tests goes there, and because a slug generator and a reorder
+ * behavior with tests goes there, and because a slug generator and a reorder
  * are exactly the things worth testing without a database.
  */
 
@@ -143,7 +144,7 @@ export type Validated<T> = { ok: true; row: T } | { ok: false; message: string }
  * the only honest something is a sentence admitting the description is missing.
  * Deriving prose from the name — "Tools for sales" — would put a fact in the
  * catalog that nobody asserted, in an app whose entire purpose is recording what
- * is actually true about the things an organisation runs.
+ * is actually true about the things an organization runs.
  */
 export const DEFAULT_DESCRIPTION = "No description yet.";
 
@@ -159,42 +160,30 @@ export const DEFAULT_DESCRIPTION = "No description yet.";
 export const CATEGORY_VANISHED = "That category no longer exists. Reload the page and choose another.";
 
 /**
- * What the simple "add by URL" path fills in for the columns it does not ask
- * about.
+ * Safe initial selections for the complete app form.
  *
- * Four of these columns are NOT NULL with a not-blank CHECK, so there is no
- * such thing as leaving them out: `description` and `owner` must carry text,
- * and `entry_type`/`status`/`host`/`auth_boundary`/`trigger_type` must each
- * carry an enum member. The simple form's job is to make the *client's* work
- * small, not to pretend the columns are optional.
- *
- * Each default is chosen to be TRUE rather than merely valid:
+ * Every selection is shown before save. Description and owner deliberately
+ * have no default: a new record must contain facts an administrator reviewed,
+ * not placeholder prose or an inferred owner.
  *
  *   entry_type     `launchable` — the simple path collects a URL, and a URL is
  *                  what launchable means. It also drags in
  *                  `launchable_requires_launch_url`, which is why that path
  *                  cannot skip the URL field.
- *   status         `active` — they are adding something they use.
+ *   status         `unverified` — new catalog facts stay explicitly unverified.
  *   host           `unknown` — the enum HAS an honest "not established" member.
  *                  Guessing `vercel` from a URL would be inventing a fact.
  *   auth_boundary  `unknown` — same reasoning, same enum member.
  *   trigger_type   `user` — a person clicks it. `entry_trigger_type` has no
  *                  `unknown`, and of the five members this is the only one that
  *                  describes a thing you open from a launcher.
- *   description    A sentence that says it is missing. Inventing a description
- *                  from the name would put a fabricated fact in the catalog,
- *                  which is the failure this whole app exists to avoid.
- *   owner          The signed-in administrator's email. They added it; until
- *                  they say otherwise, they are the honest answer, and it is
- *                  the one field here whose default is genuinely likely right.
  */
 export const ENTRY_DEFAULTS = {
   entry_type: "launchable" as EntryType,
-  status: "active" as EntryStatus,
+  status: "unverified" as EntryStatus,
   host: "unknown",
   auth_boundary: "unknown",
   trigger_type: "user",
-  description: DEFAULT_DESCRIPTION,
 } as const;
 
 /** What the category form collects. Both fields arrive untrimmed. */
@@ -210,7 +199,7 @@ export type CategoryFields = { name: string; description: string };
  * documents about itself — "survives a display_name rename" — and it is what
  * makes renaming safe. A slug that followed the name would break every grant,
  * link and generated document keyed to the old one, and renaming a category is
- * the first customisation the guided walkthrough asks a client to make.
+ * the first customization the guided walkthrough asks a client to make.
  */
 export function validateCategory(draft: CategoryDraft): Validated<CategoryFields> {
   const name = draft.name.trim();
@@ -261,8 +250,6 @@ export type EntryDraft = {
   source_of_truth_note: string;
   nav_group: NavGroup | "";
   sort_order: number;
-  /** Fills `owner` when the field is left blank — the signed-in administrator. */
-  fallbackOwner: string;
   /**
    * The `updated_at` this draft was taken from, used as the concurrency token on
    * save. Empty string on the create path, where there is no row to be stale
@@ -270,6 +257,13 @@ export type EntryDraft = {
    * `validateEntry` deliberately leaves it out of `EntryRow`.
    */
   updated_at: string;
+  access_mode: AppAccessMode;
+  auth_mode: AppAuthMode;
+  is_active: boolean;
+  selected_user_ids: string[];
+  oauth_client_id: string;
+  oauth_redirect_uris: string;
+  oauth_enabled: boolean;
 };
 
 
@@ -357,14 +351,10 @@ export function validateEntry(draft: EntryDraft): Validated<EntryRow> {
     };
   }
 
-  // NOT NULL and not-blank, with the documented fallbacks. `fallbackOwner` is
-  // itself trimmed and checked: an administrator whose account somehow carries
-  // no email must not produce a blank `owner` and a `23514` at the database.
-  const description = draft.description.trim() || ENTRY_DEFAULTS.description;
-  const owner = draft.owner.trim() || draft.fallbackOwner.trim();
-  if (!owner) {
-    return { ok: false, message: "Say who owns this entry." };
-  }
+  const description = draft.description.trim();
+  if (!description) return { ok: false, message: "Describe what this app is for." };
+  const owner = draft.owner.trim();
+  if (!owner) return { ok: false, message: "Say who owns this entry." };
 
   return {
     ok: true,
@@ -376,7 +366,12 @@ export function validateEntry(draft: EntryDraft): Validated<EntryRow> {
       entry_type: draft.entry_type,
       status: draft.status,
       host: draft.host,
-      auth_boundary: draft.auth_boundary,
+      auth_boundary:
+        draft.auth_mode === "basecamp_sso"
+          ? "platform_auth"
+          : draft.auth_mode === "external_sign_in"
+            ? "external_auth"
+            : "none",
       trigger_type: draft.trigger_type,
       owner,
       launch_url,
@@ -480,7 +475,7 @@ export function canHoldChildren(category: { parent_id: string | null }): boolean
  * change.
  *
  * RENUMBERING, NOT SWAPPING, and that is the whole design of this function.
- * Swapping two neighbours' `sort_order` values is the obvious implementation and
+ * Swapping two neighbors' `sort_order` values is the obvious implementation and
  * it silently does nothing in the case that matters most: `sort_order` defaults
  * to 0, so on a fresh install EVERY row is 0, ties are broken by slug, and
  * swapping 0 with 0 leaves the list exactly as it was. The user clicks the arrow
@@ -532,7 +527,7 @@ export function reorder<T extends Sortable>(
  *
  * A row-level key covers EVERY write to that row — rename, reorder, delete — on
  * purpose. Those are not independent: a rename and a move racing on one category
- * would both read the same pre-write snapshot, and serialising them per row is
+ * would both read the same pre-write snapshot, and serializing them per row is
  * simpler than making either safe to interleave.
  */
 export const CREATE_CATEGORY_KEY = "create-category";
@@ -549,7 +544,7 @@ export const CREATE_ENTRY_KEY = "create-entry";
  * same pre-write snapshot, and the two batches interleaved per row: the list
  * settled into an order neither click asked for.
  *
- * A single key per list serialises the whole operation, which is what a write
+ * A single key per list serializes the whole operation, which is what a write
  * that touches the whole list requires. Entries get one key PER CATEGORY,
  * because entries are reordered within their category and two categories cannot
  * renumber each other.
@@ -648,7 +643,7 @@ export function withCurrent<T extends string>(options: ReadonlyArray<T>, current
 /**
  * `reference_only` -> "Reference only". A label for an enum member, derived
  * rather than kept in a parallel map — a map would need an entry for every
- * future member and would render an unlabelled blank until someone added one.
+ * future member and would render an unlabeled blank until someone added one.
  */
 export function enumLabel(value: string): string {
   const spaced = value.replace(/_/g, " ");
@@ -682,11 +677,11 @@ export function unsluggable(name: string): string {
  *
  * IN `src/lib/` BECAUSE THESE ARE DECISIONS, NOT GLUE. Which code means "you
  * already have one of those" and which means "the database is protecting
- * something" is exactly the kind of judgement that should be pinned by a test
+ * something" is exactly the kind of judgment that should be pinned by a test
  * rather than re-derived by eye inside a component. `adminAccess.ts` set the
  * precedent with `describeError` and `isTransportFailure`.
  *
- * Returns `null` for anything unrecognised, so the caller falls back to its
+ * Returns `null` for anything unrecognized, so the caller falls back to its
  * generic "could not do X (code)" wording rather than inventing an explanation
  * for a failure nobody has seen yet.
  */

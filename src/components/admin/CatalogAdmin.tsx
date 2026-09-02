@@ -14,6 +14,7 @@ import DialogTitle from "@mui/material/DialogTitle";
 import Snackbar from "@mui/material/Snackbar";
 
 import TopBar from "@/components/shell/TopBar";
+import { describeError } from "@/lib/adminAccess";
 import {
   CATEGORY_VANISHED,
   CREATE_CATEGORY_KEY,
@@ -34,7 +35,8 @@ import {
   type EntryDraft,
 } from "@/lib/catalogAdmin";
 import { createClient } from "@/lib/supabase/client";
-import type { AdminCategory, AdminEntry } from "@/types/admin";
+import { parseRedirectUris, validateOAuthClient } from "@/lib/appConfig";
+import type { AdminCategory, AdminEntry, Person } from "@/types/admin";
 
 import CategoriesPanel from "./CategoriesPanel";
 import EntriesPanel from "./EntriesPanel";
@@ -55,6 +57,37 @@ import { failedWrite, useAdminWrite } from "./useAdminWrite";
 const REORDER_CONCURRENCY = 6;
 
 type SortUpdate = { id: string; sort_order: number };
+
+async function writeAppConfiguration(entryId: string, draft: EntryDraft): Promise<string | null> {
+  const redirectUris = parseRedirectUris(draft.oauth_redirect_uris);
+  const oauthConfig = draft.auth_mode === "basecamp_sso"
+    ? {
+        entry_id: entryId,
+        client_id: draft.oauth_client_id.trim(),
+        redirect_uris: redirectUris,
+        enabled: draft.oauth_enabled,
+      }
+    : null;
+
+  if (draft.auth_mode === "basecamp_sso") {
+    const problem = validateOAuthClient(oauthConfig);
+    if (problem) return problem;
+  }
+
+  // One database call and one transaction: settings, selected-person grants,
+  // OAuth mapping, and final activation either all land or all roll back.
+  const { error } = await createClient().rpc("configure_app", {
+    p_entry_id: entryId,
+    p_access_mode: draft.access_mode,
+    p_auth_mode: draft.auth_mode,
+    p_is_active: draft.is_active,
+    p_selected_user_ids: [...new Set(draft.selected_user_ids)],
+    p_oauth_client_id: oauthConfig?.client_id ?? null,
+    p_redirect_uris: oauthConfig?.redirect_uris ?? null,
+    p_oauth_enabled: oauthConfig?.enabled ?? false,
+  });
+  return error ? `Could not save the app configuration (${describeError(error)}).` : null;
+}
 
 /** What a delete confirmation is about. */
 type DeleteTarget = { kind: "category" | "entry"; id: string; label: string };
@@ -127,11 +160,11 @@ async function writeSortOrders(
 export default function CatalogAdmin({
   initialCategories,
   initialEntries,
-  currentUserEmail,
+  people,
 }: {
   initialCategories: AdminCategory[];
   initialEntries: AdminEntry[];
-  currentUserEmail: string;
+  people: Person[];
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -420,11 +453,11 @@ export default function CatalogAdmin({
         const supabase = createClient();
         // `row.row.sort_order` is used VERBATIM. It used to be overwritten with
         // `nextSortOrder(...)` unconditionally, which meant the full dialog's
-        // "Position" field was honoured on edit and silently discarded on
+        // "Position" field was honored on edit and silently discarded on
         // create — a form control that did nothing. The callers are what supply
-        // a sensible default now: the quick-add row seeds the draft with
-        // `nextSortOrder` for its category, and the dialog recomputes it when
-        // the category changes.
+        // a sensible default now: the full form seeds the draft with
+        // `nextSortOrder` for its category and recomputes it when the category
+        // changes.
         // `.select("id")` for the reason createCategory gives: RLS raises on a
         // refused INSERT so the error alone is sufficient here, but a reader
         // should not have to know which verb is the exception to trust the
@@ -440,8 +473,13 @@ export default function CatalogAdmin({
           );
         }
         if (!inserted || inserted.length === 0) return didNotApply();
+        const configurationError = await writeAppConfiguration(inserted[0].id, draft);
+        if (configurationError) {
+          await supabase.from("entries").delete().eq("id", inserted[0].id);
+          return configurationError;
+        }
         resync();
-        setNotice(`"${row.row.display_name}" added to the catalog.`);
+        setNotice(`"${row.row.display_name}" added to Basecamp.`);
         return null;
       }),
     [didNotApply, entries, resync, run, setNotice],
@@ -505,6 +543,8 @@ export default function CatalogAdmin({
           // sentence describes only what actually happens.
           return "Nothing was saved: the entry changed since you opened it, or the database refused the change. The form has closed — open it again to see the current values.";
         }
+        const configurationError = await writeAppConfiguration(id, draft);
+        if (configurationError) return configurationError;
         resync();
         setNotice("Entry saved.");
         return null;
@@ -526,7 +566,7 @@ export default function CatalogAdmin({
     }
     // ONE KEY PER CATEGORY. Entries are reordered within their category, so two
     // categories genuinely cannot renumber each other — but two arrows inside
-    // one category absolutely can, which is what this serialises.
+    // one category absolutely can, which is what this serializes.
     return run(reorderEntriesKey(entry.category_id), async () => {
       // Within its own category: that is the list a person is looking at when
       // they click the arrow, and the home page renders entries grouped the
@@ -613,7 +653,7 @@ export default function CatalogAdmin({
             categories={categories}
             entries={entries}
             entriesByCategory={entriesByCategory}
-            currentUserEmail={currentUserEmail}
+            people={people}
             pending={pending}
             isResyncing={isResyncing}
             onCreate={createEntry}

@@ -43,7 +43,7 @@ const CELL_COL = 44;
  *                would insert a redundant row and leave access intact
  *   dashed ring  granted by the person's TYPE — the row belongs to the type
  *   thin ring    no access
- * Shape carries the distinction, not just colour, and every cell states its
+ * Shape carries the distinction, not just color, and every cell states its
  * source in its accessible name and tooltip.
  *
  * The ringed-disc state exists because this component shipped without it: it
@@ -454,10 +454,10 @@ export default function AccessMatrix({
 }
 
 /**
- * Four states as four SHAPES, not four colours: solid disc (individual entry
+ * Four states as four SHAPES, not four colors: solid disc (individual entry
  * grant), ringed disc (individual CATEGORY grant), dashed ring (type grant),
- * thin ring (none). Colour reinforces; shape carries it, so the distinction
- * survives greyscale and the common colour-vision deficiencies.
+ * thin ring (none). Color reinforces; shape carries it, so the distinction
+ * survives grayscale and the common color-vision deficiencies.
  *
  * The two filled states are deliberately both filled — the person HAS access in
  * both — but visibly different, because only one of them is revocable here.
@@ -481,10 +481,10 @@ function AccessDot({ source, viaCategory }: { source: AccessSource; viaCategory?
         // The ringed state was originally a primary.dark border inside a
         // primary.main fill. Measured, that is #2980B9 on #3498DC = 1.37:1,
         // under WCAG 1.4.11's 3:1 floor for meaningful graphics and invisible
-        // in greyscale — so the comment above promised a distinction the pixels
-        // did not deliver. A paper-coloured GAP separates the two rings
+        // in grayscale — so the comment above promised a distinction the pixels
+        // did not deliver. A paper-colored GAP separates the two rings
         // instead: a real difference in form, at page-background contrast, that
-        // survives greyscale and every colour-vision deficiency.
+        // survives grayscale and every color-vision deficiency.
         ...(filledByCategory && {
           backgroundColor: "transparent",
           boxShadow: `inset 0 0 0 3px ${theme.palette.primary.main},

@@ -1,13 +1,16 @@
 import type { Metadata } from "next";
 
 import AuthCard from "@/components/AuthCard";
-import { APP_NAME } from "@/lib/brand";
+import { getBranding } from "@/lib/brandingServer";
 import ConfirmForm from "./ConfirmForm";
 
-export const metadata: Metadata = {
-  title: `Confirm your access · ${APP_NAME}`,
-  robots: { index: false, follow: false },
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const branding = await getBranding();
+  return {
+    title: `Confirm your access · ${branding.displayName}`,
+    robots: { index: false, follow: false },
+  };
+}
 
 /**
  * Where an admin-issued sign-in link lands.
@@ -21,9 +24,10 @@ export const metadata: Metadata = {
  * not meaningfully signed in yet, and drawing the app shell around this would
  * claim they are.
  */
-export default function ConfirmPage() {
+export default async function ConfirmPage() {
+  const branding = await getBranding();
   return (
-    <AuthCard>
+    <AuthCard branding={branding}>
       <ConfirmForm />
     </AuthCard>
   );

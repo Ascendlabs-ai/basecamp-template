@@ -146,13 +146,13 @@ function draft(over: Partial<EntryDraft> = {}): EntryDraft {
     category_id: "11111111-1111-1111-1111-111111111111",
     display_name: "Notion",
     slug: "notion",
-    description: "",
+    description: "Our team workspace.",
     entry_type: "launchable",
     status: "active",
     host: "unknown",
     auth_boundary: "unknown",
     trigger_type: "user",
-    owner: "",
+    owner: "Operations",
     launch_url: "https://notion.so",
     repo_url: "",
     runbook_url: "",
@@ -160,13 +160,19 @@ function draft(over: Partial<EntryDraft> = {}): EntryDraft {
     source_of_truth_note: "",
     nav_group: "",
     sort_order: 10,
-    fallbackOwner: "admin@example.com",
     updated_at: "2026-08-18T00:00:00Z",
+    access_mode: "everyone",
+    auth_mode: "link_only",
+    is_active: true,
+    selected_user_ids: [],
+    oauth_client_id: "",
+    oauth_redirect_uris: "",
+    oauth_enabled: true,
     ...over,
   };
 }
 
-test("validateEntry accepts the simple add-by-URL path", () => {
+test("validateEntry accepts a reviewed full-form app", () => {
   const got = validateEntry(draft());
   assert.ok(got.ok, got.ok ? "" : got.message);
   assert.equal(got.row.display_name, "Notion");
@@ -174,17 +180,7 @@ test("validateEntry accepts the simple add-by-URL path", () => {
   assert.equal(got.row.entry_type, "launchable");
 });
 
-test("validateEntry fills the two NOT NULL text columns the simple form does not ask about", () => {
-  const got = validateEntry(draft());
-  assert.ok(got.ok);
-  // Both carry `CHECK (length(btrim(x)) > 0)`, so neither may be "".
-  assert.equal(got.row.description, ENTRY_DEFAULTS.description);
-  assert.equal(got.row.owner, "admin@example.com");
-  assert.ok(got.row.description.trim().length > 0);
-  assert.ok(got.row.owner.trim().length > 0);
-});
-
-test("validateEntry prefers what the client typed over either default", () => {
+test("validateEntry trims the reviewed description and owner", () => {
   const got = validateEntry(draft({ description: "  Our wiki. ", owner: " Ops team " }));
   assert.ok(got.ok);
   assert.equal(got.row.description, "Our wiki.");
@@ -247,10 +243,27 @@ test("validateEntry turns blank optional text into NULL, never an empty string",
   assert.equal(got.row.repo_url, null);
 });
 
-test("validateEntry refuses when neither the owner field nor the fallback has anything", () => {
-  const got = validateEntry(draft({ owner: "", fallbackOwner: "  " }));
-  assert.ok(!got.ok);
-  assert.match(got.message, /owns/i);
+test("validateEntry refuses blank descriptive and ownership fields instead of silently defaulting them", () => {
+  const noDescription = validateEntry(draft({ description: "  " }));
+  assert.ok(!noDescription.ok);
+  assert.match(noDescription.message, /describe/i);
+
+  const noOwner = validateEntry(draft({ owner: "  " }));
+  assert.ok(!noOwner.ok);
+  assert.match(noOwner.message, /owns/i);
+});
+
+test("validateEntry preserves the reviewed catalog classification", () => {
+  const got = validateEntry(draft({
+    entry_type: "reference_only",
+    launch_url: "",
+    status: "coming_soon",
+    trigger_type: "manual",
+  }));
+  assert.ok(got.ok, got.ok ? "" : got.message);
+  assert.equal(got.row.entry_type, "reference_only");
+  assert.equal(got.row.status, "coming_soon");
+  assert.equal(got.row.trigger_type, "manual");
 });
 
 test("validateEntry keeps sort_order an integer", () => {
@@ -360,7 +373,7 @@ test("withCurrent does not duplicate a value already in the list", () => {
 
 test("the restated enum lists match what the form defaults to", () => {
   // A default that is not a member of its own enum is refused by Postgres, and
-  // the simple add path would fail on every entry.
+  // the full form would fail on every new entry.
   assert.ok(ENTRY_TYPES.includes(ENTRY_DEFAULTS.entry_type));
   assert.ok(ENTRY_STATUSES.includes(ENTRY_DEFAULTS.status));
   assert.ok(ENTRY_HOSTS.includes(ENTRY_DEFAULTS.host));
@@ -499,7 +512,7 @@ test("an RLS refusal on insert says who may do this", () => {
   assert.match(explainWriteError("create-entry", { code: "42501" })!, /administrators/i);
 });
 
-test("an unrecognised or absent code falls through to the caller's generic wording", () => {
+test("an unrecognized or absent code falls through to the caller's generic wording", () => {
   assert.equal(explainWriteError("create-entry", { code: "08006" }), null);
   assert.equal(explainWriteError("create-entry", {}), null);
   assert.equal(explainWriteError("create-entry", null), null);

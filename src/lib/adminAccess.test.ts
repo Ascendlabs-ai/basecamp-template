@@ -256,7 +256,7 @@ test("individual and type are a UNION — either alone grants access", () => {
   assert.equal(onlyType.source, "type");
 });
 
-test("an individual grant on top of a type grant is labelled individual but flagged redundant", () => {
+test("an individual grant on top of a type grant is labeled individual but flagged redundant", () => {
   // This is the case the UI has to explain: the toggle is live, but flipping it
   // off changes nothing the person sees, because the type still covers it.
   const r = resolveAccess(
@@ -433,9 +433,9 @@ test("an RLS refusal on the trust root is explained as permission, not as breaka
   assert.match(message, /permission/i);
 });
 
-test("an unrecognised error returns null, so the caller does not invent an explanation", () => {
+test("an unrecognized error returns null, so the caller does not invent an explanation", () => {
   // The generic failedWrite path is the right answer for anything not on the
-  // recognised list; claiming a trust-root cause for an unrelated fault would
+  // recognized list; claiming a trust-root cause for an unrelated fault would
   // send the reader looking in the wrong place.
   assert.equal(describeTrustRootRefusal({ code: "23505", message: "duplicate key" }), null);
   assert.equal(describeTrustRootRefusal(null), null);
@@ -445,7 +445,7 @@ test("an unrecognised error returns null, so the caller does not invent an expla
 // categoryLabel — naming a subcategory on the screen that decides access
 // ---------------------------------------------------------------------------
 
-test("a top-level category is labelled with its bare name", () => {
+test("a top-level category is labeled with its bare name", () => {
   const byId = new Map([["p", { name: "Finance" }]]);
   assert.equal(categoryLabel({ name: "Finance", parent_id: null }, byId), "Finance");
 });

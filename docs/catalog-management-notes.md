@@ -194,7 +194,7 @@ tests for both directions.
 a parent grants nothing about its subcategories. That is why the cap exists at
 all — the access model is flat — and making grants inherit would change what
 every existing grant means. Left as a deliberate decision, recorded in
-`issues.md`, with the access matrix labelling subcategories by parent so the
+`issues.md`, with the access matrix labeling subcategories by parent so the
 flatness is at least legible.
 
 **`CatalogView` decides `nested` at the flatten, not from `category.parent_id`.**

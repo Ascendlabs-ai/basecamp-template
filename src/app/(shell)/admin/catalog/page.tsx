@@ -11,18 +11,20 @@ import Typography from "@mui/material/Typography";
 import CatalogAdmin from "@/components/admin/CatalogAdmin";
 import TopBar from "@/components/shell/TopBar";
 import { describeError } from "@/lib/adminAccess";
-import { APP_NAME } from "@/lib/brand";
+import { getBranding } from "@/lib/brandingServer";
 import { explainReadError } from "@/lib/postgrestMessage";
+import { relationMany, relationOne } from "@/lib/postgrestRelations";
 import { isSuperAdmin } from "@/lib/isSuperAdmin";
 import { createClient } from "@/lib/supabase/server";
-import type { AdminCategory, AdminEntry } from "@/types/admin";
+import type { AdminCategory, AdminEntry, Person } from "@/types/admin";
 import { ENTRY_COLUMNS } from "@/types/catalog";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = {
-  title: `Catalog · Admin · ${APP_NAME}`,
-};
+export async function generateMetadata() {
+  const branding = await getBranding();
+  return { title: `Catalog · Admin · ${branding.displayName}` };
+}
 
 /**
  * Admin · Catalog — where the catalog actually gets filled in.
@@ -93,7 +95,7 @@ export default async function CatalogAdminPage() {
 
   // One round trip. None of the three reads depends on another, and the sibling
   // screens already record what serial awaits cost on this shell.
-  const [role, catRes, entryRes] = await Promise.all([
+  const [role, catRes, entryRes, peopleRes] = await Promise.all([
     isSuperAdmin(),
     supabase
       .from("categories")
@@ -107,9 +109,10 @@ export default async function CatalogAdminPage() {
       .from("entries")
       // `nav_group` is not in ENTRY_COLUMNS — the home page does not render it
       // — but this screen is the only place it can be set. See AdminEntry.
-      .select(`${ENTRY_COLUMNS}, category_id, nav_group, updated_at`, { count: "exact" })
+      .select(`${ENTRY_COLUMNS}, category_id, nav_group, updated_at, app_settings(entry_id, access_mode, auth_mode, is_active), oauth_clients(id, entry_id, client_id, redirect_uris, enabled), access_grants(id, user_id, entry_id, category_id)`, { count: "exact" })
       .order("sort_order", { ascending: true })
       .order("slug", { ascending: true }),
+    supabase.rpc("list_people"),
   ]);
 
   const failures: string[] = [];
@@ -133,6 +136,13 @@ export default async function CatalogAdminPage() {
     }
     const short = truncation(label, res as Counted);
     if (short) failures.push(short);
+  }
+
+  if (peopleRes.error) {
+    console.error("[basecamp] catalog admin people failed:", peopleRes.error.code, peopleRes.error.message);
+    failures.push(`people (${describeError(peopleRes.error)})`);
+    const explained = explainReadError(peopleRes.error);
+    if (explained) explanations.add(explained);
   }
 
   // The role read is checked separately: it decides which of two screens to
@@ -216,12 +226,13 @@ export default async function CatalogAdminPage() {
   return (
     <CatalogAdmin
       initialCategories={(catRes.data ?? []) as AdminCategory[]}
-      initialEntries={(entryRes.data ?? []) as AdminEntry[]}
-      // The signed-in administrator's email, used as the `owner` default on the
-      // simple add path. An account with no email would otherwise produce a
-      // blank `owner`, which the not-blank CHECK refuses — `validateEntry`
-      // catches that and says so rather than letting it reach Postgres.
-      currentUserEmail={user.email ?? ""}
+      initialEntries={(entryRes.data ?? []).map((entry) => ({
+        ...entry,
+        app_settings: relationOne(entry.app_settings),
+        oauth_clients: relationMany(entry.oauth_clients),
+        access_grants: relationMany(entry.access_grants),
+      })) as unknown as AdminEntry[]}
+      people={(peopleRes.data ?? []) as Person[]}
     />
   );
 }

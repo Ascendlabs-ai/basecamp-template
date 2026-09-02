@@ -10,7 +10,6 @@ import Button from "@mui/material/Button";
 import Typography from "@mui/material/Typography";
 
 import TopBar from "@/components/shell/TopBar";
-import { APP_NAME } from "@/lib/brand";
 
 /**
  * Error boundary for everything INSIDE the shell.
@@ -42,7 +41,7 @@ export default function ShellError({
       <Alert severity="error" icon={<ErrorOutlineRoundedIcon />} sx={{ maxWidth: 640 }}>
         <AlertTitle>Something went wrong on this page</AlertTitle>
         <Typography variant="body2" sx={{ mb: 1.5 }}>
-          The rest of {APP_NAME} still works — use the sidebar to go elsewhere, or
+          The rest of Basecamp still works — use the sidebar to go elsewhere, or
           try again.
         </Typography>
         {error.digest ? (

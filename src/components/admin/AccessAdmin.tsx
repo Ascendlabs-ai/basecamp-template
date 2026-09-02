@@ -219,7 +219,7 @@ export default function AccessAdmin({
         .limit(200)
         .then(({ data, error: auditFetchError }) => {
           // A failed refresh leaves the rows already on screen rather than
-          // blanking them. Stale-but-labelled beats empty-and-wrong here, and
+          // blanking them. Stale-but-labeled beats empty-and-wrong here, and
           // the server-rendered error slot already covers a load-time failure.
           if (auditFetchError) {
             console.error("[basecamp] audit refresh failed:", auditFetchError.message);
@@ -448,7 +448,7 @@ export default function AccessAdmin({
    *
    * REPLACES an older `resetPasswordForEmail` call. That one asked Supabase to
    * EMAIL the person, which meant it depended on the project's mail transport —
-   * and on the built-in service that reaches only the Supabase organisation's
+   * and on the built-in service that reaches only the Supabase organization's
    * own members, at roughly two messages an hour. It reported "sent" in every
    * case, including the ones where nothing would ever arrive, because the
    * endpoint answers 200 for a real and an unknown address alike. An

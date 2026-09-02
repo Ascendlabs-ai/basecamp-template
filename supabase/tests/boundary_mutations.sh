@@ -10,7 +10,7 @@
 # rests on these cases. Uncommitted, those claims are unfalsifiable and the next
 # person to edit the boundary cannot re-prove them. Twelve of these cases exist
 # because a review defeated an assertion that had already shipped in a draft;
-# each is labelled at the check it motivated.
+# each is labeled at the check it motivated.
 #
 # WHAT PASSING DOES NOT MEAN. A full-green run says the assertions catch the
 # mutations BELOW. It does not say they catch everything: a later review
@@ -94,11 +94,12 @@ MIGRATIONS=(
   "$TPL"
   "$M4"
   "$REPO/supabase/migrations/0005_category_nesting.sql"
+  "$REPO/supabase/migrations/0006_product_contract.sql"
 )
 # Labels for the per-step failure messages, index-aligned with MIGRATIONS. Kept
 # beside it rather than derived from the filenames: "0002 first" says something
 # basename() cannot, and the message exists to answer WHICH STEP FAILED.
-MIGRATION_LABELS=("0001" "0002 first" "0004" "0005")
+MIGRATION_LABELS=("0001" "0002 first" "0004" "0005" "0006")
 
 # ONE CHECKED SETUP STEP, shared by every arm.
 #
@@ -194,7 +195,7 @@ EXPECTED_CASES=113
 # Cases `0002` is expected to COMMIT rather than refuse, because it ASSIGNS as
 # well as asserts: sections 1-2 pin ownership and fix EXECUTE grants, so
 # re-running it repairs these mutations before the assertions read them. That is
-# correct behaviour for a provisioning file — it is what makes a fresh install
+# correct behavior for a provisioning file — it is what makes a fresh install
 # self-correcting — and it is NOT a coverage gap.
 #
 # The list is a WHITELIST, not a fallback: a case not named here must be
@@ -446,7 +447,7 @@ run_case "service_role lost DELETE on trust root"          REFUSED "revoke delet
 run_case "a SECOND named definer (has_grant) flipped to INVOKER" REFUSED "alter function basecamp.has_grant(uuid, uuid) security invoker; create function basecamp.filler2() returns int language sql security definer set search_path='' as 'select 1'; revoke execute on function basecamp.filler2() from public; grant execute on function basecamp.filler2() to authenticated, service_role;"
 
 echo
-echo "=== PART 5: BEHAVIOUR — the boundary holds, the logic does not. Each must be REFUSED ==="
+echo "=== PART 5: BEHAVIOR — the boundary holds, the logic does not. Each must be REFUSED ==="
 # D2: a stubbed access gate makes everyone an administrator.
 run_case "is_super_admin() stubbed to 'select true'"      REFUSED "create or replace function basecamp.is_super_admin() returns boolean language sql stable security definer set search_path='' as \$\$ select true \$\$;"
 # Names the trust root and reads it, but ignores the answer: `exists(...) and true`
@@ -504,7 +505,7 @@ run_case "USAGE+CREATE on the schema to a rogue role"         REFUSED "do \$\$ b
 echo "=== PART 8: THE SCHEMA BOUNDARY IS NOT THE SECURITY BOUNDARY ==="
 # Every other assertion in both artifacts filters nspname='basecamp', which
 # assumes an attacker's object is inside the schema being protected. PROVEN with
-# a behavioural control: a signed-in user holding zero grants read 0 rows from
+# a behavioral control: a signed-in user holding zero grants read 0 rows from
 # basecamp.entries directly and the whole catalog through a helper in `public`,
 # while the file printed "security boundary asserted".
 #
@@ -834,7 +835,7 @@ run_editor_case "CRLF route: log_privileged_action gutted, phrases hidden in com
 #    sentinel and leave the 0004 body behind and the pre-0004 digest is selected,
 #    which would let a revert of the roster function pass unnoticed. 0002 has an
 #    explicit guard for that, and this proves the guard reads a NORMALIZED digest
-#    — with a raw one the guard could not recognise the 0004 body at all on a
+#    — with a raw one the guard could not recognize the 0004 body at all on a
 #    CRLF-installed database, and would silently never fire.
 run_editor_case "CRLF route: log_privileged_action dropped, its 0004 body left behind" REFUSED "drop function basecamp.log_privileged_action(text, uuid);"
 # 3. 0005's DEPTH CAP, through the CRLF route. Nothing else in this arm touches

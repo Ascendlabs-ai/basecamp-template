@@ -9,7 +9,7 @@ import { STATUS_HINT, humanise, statusColors } from "./entryMeta";
 /**
  * The status pill, in one place. fg is the text-safe token and the fill token is
  * demoted to a 1px ring (the fills measure 2.07-3.44:1 as text — under AA). The
- * word is always present, so colour is never the only carrier (WCAG 1.4.1), and
+ * word is always present, so color is never the only carrier (WCAG 1.4.1), and
  * the two non-obvious statuses carry a hint into the accessible name.
  *
  * Extracted because this exact block was copied into four call sites and had

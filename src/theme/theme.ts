@@ -7,7 +7,7 @@ import { createTheme } from "@mui/material/styles";
  *
  * The sidebar is a fixed dark surface in BOTH themes (it is brand furniture,
  * not a mode-dependent panel), so these are defined once and shared. They exist
- * as tokens rather than inline rgba() so no component carries a raw colour.
+ * as tokens rather than inline rgba() so no component carries a raw color.
  *
  * The design handoff specifies rgba(255,255,255,α) at α = .68 body / .55 dimmed
  * / .45 meta / .32 group-label. Alpha-composited on #1D1D20 and measured (not
@@ -51,7 +51,7 @@ declare module "@mui/material/styles" {
       greenBg: string;
       yellowBg: string;
       redBg: string;
-      // Text-safe variants. The three above are FILL colours: used as text on
+      // Text-safe variants. The three above are FILL colors: used as text on
       // their own tint they measure 2.07:1 (yellow), 2.41:1 (green) and
       // 3.44:1 (red) — all under WCAG AA's 4.5:1. Never use them for text.
       greenText: string;
@@ -79,7 +79,7 @@ declare module "@mui/material/styles" {
       red: string;
       // Required, not optional. With `?` a theme that omits them still type
       // checks, and statusColors would hand the Chip `color: undefined` —
-      // silently inheriting text colour back to the 2.07-3.44:1 ratios the
+      // silently inheriting text color back to the 2.07-3.44:1 ratios the
       // text tokens exist to fix. No type error, no runtime error.
       greenText: string;
       yellowText: string;
@@ -126,7 +126,7 @@ const sharedComponents = {
         // `sharedComponents` is spread into two createTheme() calls, and a
         // callback here resolves against whichever theme is being built, which
         // is fine — but the literal keeps this file free of theme plumbing and
-        // the outline colour is the same brand blue in both modes.
+        // the outline color is the same brand blue in both modes.
         "&.Mui-focusVisible": {
           outline: "3px solid #3498DC",
           outlineOffset: 2,

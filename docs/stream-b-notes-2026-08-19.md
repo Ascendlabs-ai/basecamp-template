@@ -3,7 +3,7 @@
 
   This records why the 2026-08-19 changes to the security boundary's digest
   pins, its mutation suite, and CLAUDE.md's `.env.local` policy exist. It is
-  written from a walkthrough spec that named individuals and an organisation;
+  written from a walkthrough spec that named individuals and an organization;
   the technical findings are kept and nothing identifying is, exactly as
   `stream-b-notes.md` did before it.
 
@@ -79,7 +79,7 @@ layer down.
 ## What was deliberately not changed
 
 The empty-catalog panel already points at Admin → Catalog and was left alone. The catalog
-visibility filter was not touched. `0002`'s executable behaviour changed by exactly one
+visibility filter was not touched. `0002`'s executable behavior changed by exactly one
 expression — the digest input — and every assertion it makes is otherwise unchanged.
 
 

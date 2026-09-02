@@ -1,12 +1,13 @@
 # Basecamp — your internal app catalog and launcher
 
 An authenticated catalog of everything your team runs: what exists, what it does, who owns it,
-where it runs, and — for the things that have a URL — a button that opens them. Plus two
-administration screens: `/admin/catalog`, where the catalog is filled in, and `/admin/access`,
-which decides who sees which entries.
+where it runs, and — for the things that have a URL — a button that opens them. Plus three
+administration screens: `/admin/catalog`, where the catalog is filled in; `/admin/access`,
+which decides who sees which entries; and `/admin/branding`, which controls the name and logo.
 
-You stamped this from a template, so it is yours now and nothing links back. The name, logo,
-colours and icons are placeholders — `README.md` lists the four places to change them.
+You stamped this from a template, so it is yours now and nothing links back. Start with
+**Admin → Branding** for the name and logo; `README.md` identifies the remaining code-level
+theme and icon defaults.
 
 > This file is the project's constitution. Claude reads it at the start of every session, before
 > anything else, so it is where a rule goes when you want it to hold every time rather than only
@@ -81,7 +82,7 @@ signed-in person's requests carry their own token. Somebody with no grants gets 
 not a filtered one.
 
 That is why `NEXT_PUBLIC_SUPABASE_ANON_KEY` must hold the **anon** key and never the
-`service_role` key: service_role bypasses RLS entirely, and this app has no second line of defence
+`service_role` key: service_role bypasses RLS entirely, and this app has no second line of defense
 behind it.
 
 **One narrow exception, and its exact boundary.** Creating a person's account cannot be expressed
@@ -254,17 +255,17 @@ comment next to the code.
 runbook — the SQL files, in order, and the first-administrator step. `MAINTAINING.md` is for
 whoever re-extracts the template; **if you stamped this, you can delete it.**
 
-Some documents are shared across everything an organisation runs rather than belonging to this app
+Some documents are shared across everything an organization runs rather than belonging to this app
 — typically how-to-build notes, a goal prompt, working-safely and data-safety rules, cockpit
-instructions, plus an architecture overview and an inventory of every app. If your organisation
+instructions, plus an architecture overview and an inventory of every app. If your organization
 keeps a **standards repository**, they live there once and are **read there, never copied here**:
 
 > **Standards repository:** _paste the address of your standards repository here._
 
 If that line is still blank, ask the owner for the address rather than making a local copy of any
-of those documents — and if the organisation does not keep one, say so and the line can go. Where
+of those documents — and if the organization does not keep one, say so and the line can go. Where
 a standards repository does exist, its architecture and inventory documents cover **everything the
-organisation runs**; this project is one entry in them, not their subject. Add to them, never start
+organization runs**; this project is one entry in them, not their subject. Add to them, never start
 a second copy.
 
 ## When you're stuck

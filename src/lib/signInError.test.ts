@@ -68,7 +68,7 @@ test("a server-side fault is not the user's fault", () => {
   assert.doesNotMatch(got.message, /combination did not work/i);
 });
 
-test("an unrecognised failure defaults to configuration, not to blaming the user", () => {
+test("an unrecognized failure defaults to configuration, not to blaming the user", () => {
   // The whole point. A future status this file has never seen must not come back
   // as "your password is wrong".
   const got = classifySignInError({ status: 418, message: "something new" });

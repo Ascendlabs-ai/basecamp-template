@@ -6,6 +6,7 @@ import { isSuperAdmin } from "@/lib/isSuperAdmin";
 import { initialsFromEmail } from "@/lib/adminAccess";
 import type { NavGroup } from "@/types/admin";
 import type { ShellNavItem } from "@/types/shell";
+import { getBranding } from "@/lib/brandingServer";
 
 /**
  * The persistent shell. Everything signed-in renders inside it; /login does not
@@ -41,7 +42,7 @@ export default async function ShellLayout({ children }: { children: React.ReactN
   } = await supabase.auth.getUser();
 
   // Middleware already redirects unauthenticated requests; this is the
-  // defence-in-depth copy, matching the catalog page.
+  // defense-in-depth copy, matching the catalog page.
   if (!user) redirect("/login");
 
   // RLS-filtered: the viewer receives only entries they can already read, so
@@ -51,7 +52,7 @@ export default async function ShellLayout({ children }: { children: React.ReactN
   // and every page in the app paid them SEQUENTIALLY before its own queries
   // even started. That serial latency is what made the loading skeleton
   // visible. admin/access/page.tsx already used this shape.
-  const [{ data, error, count }, role] = await Promise.all([
+  const [{ data, error, count }, role, branding] = await Promise.all([
     supabase
       .from("entries")
       .select("id, slug, display_name, launch_url, nav_group, sort_order", { count: "exact" })
@@ -62,6 +63,7 @@ export default async function ShellLayout({ children }: { children: React.ReactN
     // Request-scoped and deduplicated: the home page and the Catalog admin ask
     // the same question, and this is the one call all three share.
     isSuperAdmin(),
+    getBranding(),
   ]);
 
   if (error) {
@@ -121,6 +123,7 @@ export default async function ShellLayout({ children }: { children: React.ReactN
     <AppShell
       navItems={navItems}
       canAdmin={canAdmin}
+      branding={branding}
       identity={{
         email,
         initials: initialsFromEmail(email),

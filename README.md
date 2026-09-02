@@ -13,6 +13,13 @@ at your own Supabase project, and it is yours; nothing links back here.
 ## What you get
 
 - **A catalog** grouped into categories, filtered per-viewer by the database.
+- **App configuration** for active/inactive state, everyone/selected access,
+  and truthful link, external sign-in, or Basecamp SSO behavior. **Add an app**
+  opens the complete configuration form; there is no quick path that saves
+  hidden defaults.
+- **Administrator-managed branding** at `/admin/branding` — change the Basecamp
+  display name and upload, replace, or remove the public login logo without a
+  code change. New stamps start with a neutral name and mark.
 - **A launcher sidebar** for the entries that are actually openable.
 - **Access administration** at `/admin/access` — grant a person a single entry
   or a whole category, or grant a *type* of person (staff, contractor, client)
@@ -75,25 +82,34 @@ Full provisioning instructions, including the first-administrator step, are in
    API). Nothing works before this and the failure is opaque.
 3. Apply the SQL files in order: `0001_baseline.sql`, `0002_security_boundary.sql`,
    optionally `0003_seed_categories.sql` for four starter categories, then
-   `0004_admin_write_paths.sql` and `0005_category_nesting.sql`. Only `0003` is
+   `0004_admin_write_paths.sql`, `0005_category_nesting.sql`, and
+   `0006_product_contract.sql`, then `0007_branding_settings.sql`. Only `0003` is
    optional — `0004` is what makes **Add person** work and what seeds the three
-   starter member types, and `0005` adds subcategories.
+   starter member types, `0005` adds subcategories, and `0006` adds the app
+   availability, access-mode, OAuth client-mapping, and configuration-audit
+   contract. `0007` adds administrator-managed display name and logo settings.
 4. Create your administrator account, then insert their trust-root row.
 5. `cp .env.local.example .env.local` and fill in the values — two required, plus
    `SUPABASE_SERVICE_ROLE_KEY` if you want to add people from the app.
 6. Add `/auth/confirm` and `/accept-invite` to the project's Redirect URLs.
 7. `npm install && npm run dev`, sign in, confirm `/admin/access` renders.
-8. Build your catalog in **Admin → Catalog**, and add your first person.
+8. Set the client identity in **Admin → Branding**, build the catalog in
+   **Admin → Catalog**, and add the first person in **Admin → Access**.
 
-## Rebranding
+## Branding
 
-Four places, by design:
+After provisioning, a super administrator can use **Admin → Branding** to set
+the Basecamp display name and upload, replace, or remove the public login logo.
+The neutral defaults below ensure that a freshly stamped client never inherits
+another organization's identity.
+
+The remaining code-level brand defaults are:
 
 | What | Where |
 |---|---|
-| Product name, org name, home heading, tagline | `src/lib/brand.ts` — the heading is composed from `ORG_NAME`, so setting that one constant changes the home page |
-| The logo mark | `src/components/Logo.tsx` (a neutral placeholder — swap the inline SVG, or render your own asset) |
-| Colours, type, the dark sidebar | `src/theme/theme.ts` |
+| Neutral product-name and tagline fallbacks | `src/lib/brand.ts` |
+| Default logo mark and uploaded-logo renderer | `src/components/Logo.tsx` |
+| Colors, type, the dark sidebar | `src/theme/theme.ts` |
 | Browser/app icons | `src/app/icon.png`, `src/app/apple-icon.png`, `public/favicon-*.png` — neutral placeholders, replace with your own |
 
 `src/lib/logoUsage.test.ts` enforces that the brand stays in those files: any
@@ -103,7 +119,7 @@ are not a user-visible surface.) That guard exists because in the app this was
 extracted from, two surfaces had each inlined their own logo and pinned
 themselves to light mode.
 
-The colour caveat: `theme.ts` holds the palette, but a few focus-ring literals
+The color caveat: `theme.ts` holds the palette, but a few focus-ring literals
 sit outside it. Grep `src/theme/theme.ts` for raw hex before assuming a palette
 edit covered everything.
 
@@ -201,7 +217,7 @@ cannot offer you anything the database would refuse.
 **Grants do not inherit.** `category_has_grant()` is flat: granting somebody
 "Finance" grants them nothing about "Finance › Reports". Each category — parent
 or subcategory — is its own column in the access matrix, and subcategories are
-labelled with their parent there so two called "Reports" are distinguishable.
+labeled with their parent there so two called "Reports" are distinguishable.
 
 **A category used only as a container renders fine.** If every tile lives in the
 subcategories and none in the parent, the parent still appears as a heading with

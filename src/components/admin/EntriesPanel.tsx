@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 
 import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import ArrowDownwardRoundedIcon from "@mui/icons-material/ArrowDownwardRounded";
@@ -12,10 +12,8 @@ import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
 import IconButton from "@mui/material/IconButton";
-import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
-import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
 import {
@@ -29,18 +27,17 @@ import {
   categoryTree,
 } from "@/lib/catalogAdmin";
 import { categoryLabel } from "@/lib/adminAccess";
-import type { AdminCategory, AdminEntry } from "@/types/admin";
+import { authModeLabel, ssoReadiness } from "@/lib/appConfig";
+import type { AdminCategory, AdminEntry, Person } from "@/types/admin";
 
 import EntryDialog from "./EntryDialog";
 
 /**
  * Admin · Catalog · Entries — the catalog itself.
  *
- * TWO WAYS IN, on purpose. The row at the top takes a name, a URL and a
- * category, and is what the guided walkthrough's "add your first app" step
- * describes: three fields, and the seven other NOT NULL columns filled from
- * `ENTRY_DEFAULTS`. "All fields" opens the same write with nothing defaulted,
- * for an entry that is not a launchable app or that needs an owner recorded.
+ * There is one creation path: Add an app opens the complete configuration
+ * dialog. A new record cannot bypass its descriptive, ownership, access,
+ * activity, and authentication decisions through a smaller quick-add write.
  *
  * Entries are listed under their category and reordered within it, because that
  * is how the home page groups them — an arrow that moved an entry past a
@@ -51,7 +48,7 @@ export default function EntriesPanel({
   categories,
   entries,
   entriesByCategory,
-  currentUserEmail,
+  people,
   pending,
   isResyncing,
   onCreate,
@@ -63,7 +60,7 @@ export default function EntriesPanel({
   categories: AdminCategory[];
   entries: AdminEntry[];
   entriesByCategory: Map<string, AdminEntry[]>;
-  currentUserEmail: string;
+  people: Person[];
   pending: Set<string>;
   /** True while a resync is in flight, so reorder controls stay unavailable. */
   isResyncing: boolean;
@@ -85,9 +82,6 @@ export default function EntriesPanel({
   /** Parents by id, so a subcategory section can name the one it sits under. */
   const categoryById = new Map(categories.map((c) => [c.id, { name: c.name }]));
 
-  const [quickName, setQuickName] = useState("");
-  const [quickUrl, setQuickUrl] = useState("");
-  const [quickCategory, setQuickCategory] = useState(orderedCategories[0]?.category.id ?? "");
   // A DISCRIMINATED UNION, so `id` is a string exactly when the mode is "edit".
   // The previous shape (`id: string | null` for both modes) forced a non-null
   // assertion at the submit call — safe by construction, but only because one
@@ -97,32 +91,13 @@ export default function EntriesPanel({
     | { mode: "edit"; id: string; draft: EntryDraft }
     | null
   >(null);
-  /** Focus returns here after a successful quick add, ready for the next one. */
-  const nameField = useRef<HTMLInputElement>(null);
-
   const createPending = pending.has(CREATE_ENTRY_KEY);
 
-  /**
-   * The category the quick-add row is pointing at, clamped at render.
-   *
-   * `quickCategory` is initialised once, and the hook runs before the
-   * empty-state early return below — so a client who lands with no categories,
-   * then has four arrive through a resync, holds `""` and sees a blank select
-   * whose Add always fails. The same state can point at a category another
-   * administrator has since deleted, which would send a dead `category_id` to a
-   * foreign key. Falling back at render keeps it valid without an effect.
-   */
-  const selectedCategory = orderedCategories.some((c) => c.category.id === quickCategory)
-    ? quickCategory
-    : orderedCategories[0]?.category.id ?? "";
-
-  const quickAddBlocked = quickName.trim() === "" || quickUrl.trim() === "" || createPending;
-
-  /** A blank draft: the defaults, plus whatever the quick row already holds. */
+  /** A safe blank draft whose defaults are all visible in the full form. */
   function blankDraft(categoryId: string): EntryDraft {
     return {
       category_id: categoryId,
-      display_name: quickName,
+      display_name: "",
       slug: "",
       description: "",
       entry_type: ENTRY_DEFAULTS.entry_type,
@@ -131,16 +106,22 @@ export default function EntriesPanel({
       auth_boundary: ENTRY_DEFAULTS.auth_boundary,
       trigger_type: ENTRY_DEFAULTS.trigger_type,
       owner: "",
-      launch_url: quickUrl,
+      launch_url: "",
       repo_url: "",
       runbook_url: "",
       technical_name: "",
       source_of_truth_note: "",
       nav_group: "",
       sort_order: nextSortOrder(entriesByCategory.get(categoryId) ?? []),
-      fallbackOwner: currentUserEmail,
       // No row to be stale against on the create path.
       updated_at: "",
+      access_mode: "selected",
+      auth_mode: "link_only",
+      is_active: false,
+      selected_user_ids: [],
+      oauth_client_id: "",
+      oauth_redirect_uris: "",
+      oauth_enabled: true,
     };
   }
 
@@ -166,8 +147,16 @@ export default function EntriesPanel({
       source_of_truth_note: entry.source_of_truth_note ?? "",
       nav_group: entry.nav_group ?? "",
       sort_order: entry.sort_order,
-      fallbackOwner: currentUserEmail,
       updated_at: entry.updated_at,
+      access_mode: entry.app_settings?.access_mode ?? "selected",
+      auth_mode: entry.app_settings?.auth_mode ?? "link_only",
+      is_active: entry.app_settings?.is_active ?? false,
+      selected_user_ids: entry.access_grants
+        .filter((grant) => grant.entry_id === entry.id)
+        .map((grant) => grant.user_id),
+      oauth_client_id: entry.oauth_clients[0]?.client_id ?? "",
+      oauth_redirect_uris: entry.oauth_clients[0]?.redirect_uris.join("\n") ?? "",
+      oauth_enabled: entry.oauth_clients[0]?.enabled ?? true,
     };
   }
 
@@ -198,98 +187,24 @@ export default function EntriesPanel({
   return (
     <>
       <Paper elevation={0} sx={{ border: 1, borderColor: "divider", p: { xs: 1.5, sm: 2 }, mb: 2 }}>
-        <Typography component="h2" sx={{ fontSize: 14, fontWeight: 700, mb: 0.25 }}>
-          Add an app
-        </Typography>
-        <Typography sx={{ fontSize: 11.5, color: "text.secondary", mb: 1.5 }}>
-          A name, its address, and where it belongs. Everything else gets a
-          sensible default you can change later.
-        </Typography>
-        <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ md: "flex-start" }}>
-          <TextField
-            size="small"
-            label="Name"
-            value={quickName}
-            onChange={(e) => setQuickName(e.target.value)}
-            placeholder="e.g. Notion"
-            inputRef={nameField}
-            sx={{ flex: 1, minWidth: 0 }}
-          />
-          {/* REQUIRED, and marked as such. `ENTRY_DEFAULTS.entry_type` is
-              `launchable`, which drags in
-              `basecamp_entries_launchable_requires_launch_url` — so gating Add
-              on the name alone put a guaranteed refusal one click away, on the
-              first write a new client ever attempts. Either the field is
-              required or the default is not launchable; this is the cheaper
-              half, and a URL is what "add an app" means. */}
-          <TextField
-            size="small"
-            label="URL"
-            required
-            value={quickUrl}
-            onChange={(e) => setQuickUrl(e.target.value)}
-            placeholder="https://…"
-            helperText="Needed to open it from the catalog."
-            sx={{ flex: 1.4, minWidth: 0 }}
-          />
-          <TextField
-            select
-            size="small"
-            label="Category"
-            value={selectedCategory}
-            onChange={(e) => setQuickCategory(e.target.value)}
-            sx={{ flex: 1, minWidth: 0 }}
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "center" }}>
+          <Box sx={{ flex: 1 }}>
+            <Typography component="h2" sx={{ fontSize: 14, fontWeight: 700, mb: 0.25 }}>
+              Add an app
+            </Typography>
+            <Typography sx={{ fontSize: 11.5, color: "text.secondary" }}>
+              Review the catalog details, owner, access, availability, and authentication before saving.
+            </Typography>
+          </Box>
+          <Button
+            variant="contained"
+            startIcon={createPending ? <CircularProgress size={14} color="inherit" /> : <AddRoundedIcon />}
+            disabled={createPending}
+            onClick={() => setDialog({ mode: "create", draft: blankDraft(orderedCategories[0].category.id) })}
+            sx={{ flexShrink: 0 }}
           >
-            {/* Indented, so choosing where a tile goes is unambiguous. Only
-                `slug` is unique — `uniqueSlug` dedupes slugs, not names — so
-                two subcategories genuinely can both be called "Reports". */}
-            {orderedCategories.map(({ category: c, nested }) => (
-              <MenuItem key={c.id} value={c.id} sx={nested ? { pl: 4 } : undefined}>
-                {nested ? categoryLabel(c, categoryById) : c.name}
-              </MenuItem>
-            ))}
-          </TextField>
-          <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
-            {/* `aria-disabled`, NOT `disabled` — this button becomes
-                unavailable AS A RESULT OF SUCCEEDING (the handler clears the
-                name), and a real `disabled` would drop keyboard focus to
-                <body> after every add. The repo's own rule, stated in
-                AccessMatrix.tsx. */}
-            <Button
-              variant="contained"
-              size="small"
-              startIcon={createPending ? <CircularProgress size={14} color="inherit" /> : <AddRoundedIcon />}
-              aria-disabled={quickAddBlocked}
-              onClick={() => {
-                if (quickAddBlocked) return;
-                void onCreate(blankDraft(selectedCategory)).then((created) => {
-                  // Cleared on SUCCESS only, so a refusal leaves the typed
-                  // values in place to be corrected.
-                  if (created) {
-                    setQuickName("");
-                    setQuickUrl("");
-                    nameField.current?.focus();
-                  }
-                });
-              }}
-              sx={{
-                cursor: quickAddBlocked ? "not-allowed" : "pointer",
-                whiteSpace: "nowrap",
-                ...(quickAddBlocked
-                  ? { backgroundColor: "action.disabledBackground", color: "action.disabled", "&:hover": { backgroundColor: "action.disabledBackground" } }
-                  : {}),
-              }}
-            >
-              Add
-            </Button>
-            <Button
-              size="small"
-              onClick={() => setDialog({ mode: "create", draft: blankDraft(selectedCategory) })}
-              sx={{ cursor: "pointer", whiteSpace: "nowrap" }}
-            >
-              All fields…
-            </Button>
-          </Stack>
+            Add an app
+          </Button>
         </Stack>
       </Paper>
 
@@ -361,31 +276,20 @@ export default function EntriesPanel({
                               >
                                 {entry.display_name}
                               </Typography>
-                              {/* The two facts that decide where an entry
-                                  appears at all: whether it is launchable, and
-                                  whether it has a sidebar group. Both are
-                                  invisible on the home page, and both are the
-                                  answer to "why can I not see it". */}
-                              {entry.entry_type !== "launchable" ? (
+                              {!entry.app_settings?.is_active ? (
                                 <Chip
                                   size="small"
-                                  label={entry.entry_type === "reference_only" ? "Reference" : "Catalog only"}
-                                  sx={{ flexShrink: 0, fontSize: 10, backgroundColor: "background.default", border: 1, borderColor: "divider" }}
-                                />
-                              ) : entry.nav_group === null ? (
-                                <Chip
-                                  size="small"
-                                  label="Not in sidebar"
+                                  label="Inactive"
                                   sx={{ flexShrink: 0, fontSize: 10, backgroundColor: "background.default", border: 1, borderColor: "divider" }}
                                 />
                               ) : null}
-                              {entry.status !== "active" ? (
-                                <Chip
-                                  size="small"
-                                  label={entry.status.replace(/_/g, " ")}
-                                  sx={{ flexShrink: 0, fontSize: 10, backgroundColor: "background.default", border: 1, borderColor: "divider" }}
-                                />
-                              ) : null}
+                              <Chip size="small" label={entry.app_settings?.access_mode === "everyone" ? "Everyone" : "Selected people"} sx={{ flexShrink: 0, fontSize: 10 }} />
+                              <Chip
+                                size="small"
+                                label={authModeLabel(entry.app_settings?.auth_mode ?? "link_only")}
+                                color={ssoReadiness(entry.app_settings?.auth_mode ?? "link_only", entry.oauth_clients[0] ?? null) === "failing" ? "warning" : "default"}
+                                sx={{ flexShrink: 0, fontSize: 10 }}
+                              />
                             </Stack>
                             <Typography
                               sx={{ fontSize: 11.5, color: "text.secondary", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
@@ -465,8 +369,8 @@ export default function EntriesPanel({
 
       {/* MOUNTED ONLY WHILE OPEN. Rendering it always meant passing a freshly
           allocated `blankDraft(...)` as the fallback on every parent render, so
-          `EntryDialog`'s identity-guarded reseed fired on every keystroke in the
-          quick-add row — and on close, the form visibly reset and the title
+          `EntryDialog`'s identity-guarded reseed fired on every parent render —
+          and on close, the form visibly reset and the title
           flipped from "Edit entry" to "Add an entry" mid-fade. Unmounting costs
           the exit transition, which is the right trade for a form that must not
           show the wrong row's values. */}
@@ -476,17 +380,14 @@ export default function EntriesPanel({
           mode={dialog.mode}
           initial={dialog.draft}
           categories={categories}
+          people={people}
           nextSortOrderFor={(categoryId) => nextSortOrder(entriesByCategory.get(categoryId) ?? [])}
           busy={dialog.mode === "edit" ? pending.has(entryKey(dialog.id)) : createPending}
           onCancel={() => setDialog(null)}
           onSubmit={async (draft) => {
             if (dialog.mode === "create") {
               const created = await onCreate(draft);
-              if (created) {
-                setDialog(null);
-                setQuickName("");
-                setQuickUrl("");
-              }
+              if (created) setDialog(null);
               return created;
             }
             const result = await onUpdate(dialog.id, draft);

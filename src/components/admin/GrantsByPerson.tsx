@@ -355,7 +355,7 @@ export default function GrantsByPerson({
                               }}
                               inputProps={{
                                 // Three cases, matching the matrix. An ON switch
-                                // labelled "Grant …" states the wrong verb, and
+                                // labeled "Grant …" states the wrong verb, and
                                 // when a whole-category grant also covers this
                                 // entry the click will not remove the person's
                                 // access — the label has to say so BEFORE the

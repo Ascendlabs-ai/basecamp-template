@@ -103,7 +103,7 @@ export default function CategoryBlock({
     hidden: {},
     show: { transition: { staggerChildren: reduceMotion ? 0 : 0.035, delayChildren: 0.02 } },
   };
-  // y only, never opacity — hidden state is serialised into SSR, and a fade
+  // y only, never opacity — hidden state is serialized into SSR, and a fade
   // that never resolves (JS blocked / hydration error) would leave the catalog
   // invisible; a translate that never resolves leaves it readable.
   const item = {

@@ -21,7 +21,7 @@ import TextField from "@mui/material/TextField";
  * console, never put in an error message, and never persisted anywhere — it
  * exists in this component's props for as long as the dialog is open and is
  * gone when it closes. That is why the warning below says single-use rather
- * than merely "shown once": "shown once" describes this dialog's behaviour,
+ * than merely "shown once": "shown once" describes this dialog's behavior,
  * while single-use describes the token, and it is the token property that
  * decides how carefully the link has to be handled on its way to the person.
  *

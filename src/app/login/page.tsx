@@ -6,15 +6,18 @@ import Skeleton from "@mui/material/Skeleton";
 
 import DotGridSurface from "@/components/DotGridSurface";
 import Logo from "@/components/Logo";
-import { APP_NAME } from "@/lib/brand";
+import { getBranding } from "@/lib/brandingServer";
+import type { Metadata } from "next";
 
 import LoginForm from "./LoginForm";
 
-export const metadata = {
-  title: `Sign in · ${APP_NAME}`,
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const branding = await getBranding();
+  return { title: `Sign in · ${branding.displayName}` };
+}
 
-export default function LoginPage() {
+export default async function LoginPage() {
+  const branding = await getBranding();
   return (
     <DotGridSurface>
       <Paper
@@ -34,13 +37,13 @@ export default function LoginPage() {
               the light/dark ink swap and the cropped aspect ratios, so a second
               inline copy here would silently stay light-mode-only when dark
               mode is wired. */}
-          <Logo variant="primary" height={56} />
+          <Logo variant="primary" height={56} branding={branding} />
         </Box>
 
         {/* useSearchParams() needs a Suspense boundary or the whole route
             opts out of static rendering and `next build` warns. */}
         <Suspense fallback={<Skeleton variant="rounded" height={320} />}>
-          <LoginForm />
+          <LoginForm branding={branding} />
         </Suspense>
       </Paper>
     </DotGridSurface>

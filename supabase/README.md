@@ -1,9 +1,9 @@
 # Provisioning the database
 
-Five SQL files, applied in order, then one INSERT to create the first
+Seven SQL files, applied in order, then one INSERT to create the first
 administrator. Nothing else. **Only the third is optional** — it is starter
-categories and nothing more; the other four build the schema, lock it, and open
-the two write paths the admin screens use.
+categories and nothing more; the other six build the schema, lock it, and open
+the write paths the admin screens use.
 
 | File | What it is |
 |---|---|
@@ -12,6 +12,8 @@ the two write paths the admin screens use.
 | `migrations/0003_seed_categories.sql` | Hand-written, and **optional**. Four starter categories — Sales, Marketing, Operations, Useful Tools — so a new app has somewhere to put its first entry. Contains no schema at all. Idempotent, and safe to skip entirely. |
 | `migrations/0004_admin_write_paths.sql` | Hand-written, and **required**. Opens the trust root's INSERT/DELETE so administrators can promote each other from the app, adds `basecamp.log_privileged_action()`, widens `list_people()` with ban state and member type, and seeds the three starter member types **Add person** needs in order to offer anything. Without it **Add person** and the roster's ⋮ menu do not work. Idempotent, and it asserts its own post-conditions the way `0002` does. |
 | `migrations/0005_category_nesting.sql` | Hand-written, and **required** — not optional. The home page, the catalog admin and the access matrix all `select` `categories.parent_id`, so without this migration all three fail with `42703 column does not exist`. Adds `categories.parent_id`, an ON DELETE RESTRICT self-reference, and `enforce_category_depth()` — the trigger that caps nesting at one level in both directions. Adds no grant and no policy: `authenticated` already held all four verbs on `categories` from 0001, so nesting is decided by the policies that were already there. Idempotent, atomic, and asserts its own post-conditions. |
+| `migrations/0006_product_contract.sql` | Hand-written and **required**. Adds active/everyone/selected app settings, OAuth client mappings, configuration audit, RLS enforcement, and the token-time entitlement hook. |
+| `migrations/0007_branding_settings.sql` | Hand-written and **required**. Adds administrator-managed Basecamp identity settings, an append-only branding audit, the narrow signed-out branding projection, and a constrained public logo bucket. |
 | `tests/` | Not applied to your database. `boundary_mutations.sh` is the proof that `0002`'s assertions actually catch things, and `_supabase_surface_stub.sql` is what lets a bare PostgreSQL cluster stand in for Supabase while it runs. Optional; see step 1. |
 
 > **On the filenames.** These are numbered `0001`/`0002` rather than carrying the
@@ -57,6 +59,8 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/0002_security_bou
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/0003_seed_categories.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/0004_admin_write_paths.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/0005_category_nesting.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/0006_product_contract.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/0007_branding_settings.sql
 ```
 
 **`0003` is the optional one; `0004` is not.** `0003` adds four starter categories and
@@ -306,9 +310,10 @@ screen is the only proof the trust root took.
 Categories and entries are `super_admin`-only writes, enforced by policy. Sign
 in and go to **Admin → Catalog**:
 
-- **Entries** — "Add an app" takes a name, a URL and a category; everything else
-  gets a default you can change. "All fields" opens the same form with nothing
-  hidden.
+- **Entries** — **Add an app** opens the complete form immediately. Review the
+  descriptive and catalog fields, owner, access scope, active state, and
+  authentication mode before saving; there is no abbreviated path that writes
+  silent defaults.
 - **Categories** — create, rename, reorder and delete, and nest one level deep
   with the "Sits under" picker. A category holding entries *or subcategories*
   cannot be deleted; the database refuses it and the screen says so. The
@@ -416,7 +421,7 @@ is limited in two ways that together make it unusable for reaching real people:
 | Limit | Effect |
 |---|---|
 | **~2 emails per hour, project-wide** | Not per address, not per admin — per project. Sending to a third person within the hour fails. |
-| **Team members' addresses only** | It will only deliver to email addresses belonging to members of your Supabase organisation. Mail to anyone else is silently not delivered. |
+| **Team members' addresses only** | It will only deliver to email addresses belonging to members of your Supabase organization. Mail to anyone else is silently not delivered. |
 
 **And the failure is silent in both directions.** Supabase's recovery endpoint
 returns success whether or not anything was delivered — by design, so it cannot
@@ -424,7 +429,7 @@ be used to discover which addresses exist — so any flow built on it reports
 success to the operator while the recipient receives nothing.
 
 **The administrator-issued link has none of these limits**, because it sends no
-mail: no rate limit, no organisation-member restriction, and no silent failure.
+mail: no rate limit, no organization-member restriction, and no silent failure.
 The link either appears on the administrator's screen or the screen says why it
 did not. If someone cannot get in, issue them one from the roster.
 
@@ -601,3 +606,39 @@ leave a spoofed identity on a pooled backend after the transaction ends.
 This proves the gate's LOGIC while connected as `postgres`. It does not prove
 that the `authenticated` role can reach the schema — the exposure step and a
 real sign-in are what prove that.
+
+---
+
+## Optional Basecamp SSO
+
+`0006_product_contract.sql` adds a standards-based OAuth 2.1 Authorization Code
++ PKCE boundary for apps configured as **Basecamp SSO**. Register each client in
+Supabase, then add the same public client UUID and exact redirect URI in
+**Admin → Catalog**. Client secrets, authorization codes, and tokens do not
+belong in the Basecamp tables.
+
+The database checks app activity and effective access again while Supabase
+issues a token. Disabling an app therefore denies token issuance to everyone,
+including Basecamp administrators, while administrators retain catalog access
+to repair or reconfigure it.
+
+The built-in `/sso/reference` client is an optional protocol check. Register
+its deployed `/sso/reference/callback` URL, set the public client identifier as
+`BASECAMP_REFERENCE_OAUTH_CLIENT_ID`, and use the page to verify the PKCE flow.
+The reference route validates and discards returned tokens; it never displays
+or stores them.
+
+## Administrator branding
+
+`0007_branding_settings.sql` adds **Admin → Branding**. A Basecamp super
+administrator can change the display name and upload, replace, or remove a PNG,
+JPEG, or WebP logo up to 2 MB. The saved identity appears in the sidebar,
+signed-out authentication screens, and page titles. Until an administrator
+saves an override, a new launch uses the neutral **Basecamp** name and mark
+shipped by this template.
+
+The public bucket contains only the login-safe logo object. Anonymous clients
+can read only the fixed `public.basecamp_public_branding()` projection; they
+receive no table access to the `basecamp` schema. Branding writes stay behind
+`basecamp.is_super_admin()` and every change is recorded in the append-only
+branding audit.

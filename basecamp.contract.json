@@ -1,0 +1,19 @@
+{
+  "contractVersion": 2,
+  "profile": "standalone-template",
+  "templateBaselineCommit": "8329d27",
+  "schemaThrough": "0007_branding_settings.sql",
+  "features": [
+    "catalog-crud",
+    "one-level-category-nesting",
+    "membership-and-access-admin",
+    "member-onboarding",
+    "everyone-or-selected-app-access",
+    "active-app-gate",
+    "oauth-2.1-pkce",
+    "token-time-entitlement",
+    "configuration-audit",
+    "administrator-branding",
+    "full-form-app-creation"
+  ]
+}

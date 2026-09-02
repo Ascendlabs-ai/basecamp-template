@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -12,7 +12,7 @@ import test from "node:test";
  * edit of its own.
  *
  * So the failure mode is not "someone types the wrong thing". It is "an
- * upstream comment naming the originating organisation, its database, or a real
+ * upstream comment naming the originating organization, its database, or a real
  * person arrives silently in a public repo during a routine re-extraction".
  * A sweep run by hand at extraction time does not guard that; it only records
  * that one extraction happened to be clean.
@@ -28,7 +28,7 @@ const ROOT = process.cwd();
 /**
  * Tracked files only, from git. Deliberately NOT a filesystem walk: node_modules,
  * .next and a developer's own .env.local are all untracked, and a walk would
- * either scan them (slow, and false positives from third-party licence text) or
+ * either scan them (slow, and false positives from third-party license text) or
  * need an exclusion list that rots.
  */
 function trackedFiles(): string[] {
@@ -47,7 +47,7 @@ const BINARY = /\.(png|jpe?g|gif|ico|webp|woff2?|ttf|otf|pdf|zip)$/i;
  * worse than no guard. `ascending` is exactly why these are anchored.
  */
 const FORBIDDEN: ReadonlyArray<{ label: string; re: RegExp }> = [
-  { label: "originating organisation", re: /\bAscendAI\b|\bAscendlabs\b|ascendlabs\.ai/i },
+  { label: "originating organization", re: /\bAscendAI\b|\bAscendlabs\b|ascendlabs\.ai/i },
   { label: "originating org's database", re: /\bAscend Spine\b|\bspine_2026\b|\bleadworks_spine\b/i },
   { label: "originating org's Supabase project ref", re: /fhdhefsvyyokorvuxxyb/i },
   { label: "originating org's other products", re: /\bLeadWorks\b|leadworksai/i },
@@ -77,7 +77,7 @@ const FORBIDDEN: ReadonlyArray<{ label: string; re: RegExp }> = [
   // more: this template now SHIPS both, so a reference to either resolves. They
   // were listed on the premise that extraction deletes them, and that premise
   // made the guard enforce a real defect — the Build Kit walkthrough teaches a
-  // client to open `CLAUDE.md` on the step after it teaches them to recognise
+  // client to open `CLAUDE.md` on the step after it teaches them to recognize
   // it, and until now they arrived at a file that was not there. The guardrails
   // in `.claude/` could never have shipped either: `hooks/shared.mjs` and
   // `skills/naysayer/SKILL.md` both name `CLAUDE.md`.
@@ -112,7 +112,7 @@ const ALLOWED = new Map<string, ReadonlyArray<string>>([
   // This file names every pattern in order to test for it.
   ["src/lib/templateHygiene.test.ts", FORBIDDEN.map((f) => f.label)],
   // MAINTAINING.md documents the extraction, so it necessarily names the
-  // upstream paths it excludes. It names no organisation and no credential.
+  // upstream paths it excludes. It names no organization and no credential.
   // "an upstream migration filename" was listed here too and matched nothing:
   // MAINTAINING.md's timestamps are bare 14-digit versions with no `_name.sql`
   // tail, which that pattern requires. A dead allowlist entry is exactly what
@@ -121,10 +121,14 @@ const ALLOWED = new Map<string, ReadonlyArray<string>>([
   ["MAINTAINING.md", ["an upstream-only path"]],
 ]);
 
-test("no tracked file leaks the originating organisation, its infrastructure, or a credential", () => {
+test("no tracked file leaks the originating organization, its infrastructure, or a credential", () => {
   const violations: string[] = [];
 
   for (const file of trackedFiles()) {
+    // `git ls-files` includes tracked paths deleted by an uncommitted rename.
+    // Scan the replacement through the explicit full-worktree release check;
+    // there is no content left to inspect at the missing path.
+    if (!existsSync(path.join(ROOT, file))) continue;
     if (BINARY.test(file)) continue;
     const text = readFileSync(path.join(ROOT, file), "utf8");
     const exempt = ALLOWED.get(file) ?? [];
@@ -177,7 +181,7 @@ test("the files the walkthrough teaches a client to open are actually shipped", 
     required.filter((f) => !tracked.has(f)),
     [],
     "A client stamps this template and gets exactly the tracked tree. The guided " +
-      "walkthrough teaches them to recognise these files and then to open CLAUDE.md " +
+      "walkthrough teaches them to recognize these files and then to open CLAUDE.md " +
       "and read it aloud, so a missing one is a broken step at their keyboard.",
   );
 });
@@ -232,7 +236,7 @@ test("the baseline contains no psql meta-commands", () => {
 
 /**
  * `SET transaction_timeout` is PostgreSQL 17+. Supabase projects are not all on
- * 17, and an unrecognised SET aborts the entire script before any object is
+ * 17, and an unrecognized SET aborts the entire script before any object is
  * created — the same class of failure as the meta-commands above.
  */
 test("the baseline sets no GUC that predates the oldest supported PostgreSQL", () => {
@@ -298,7 +302,7 @@ test("the baseline grants no privilege that predates the oldest supported Postgr
  * three-way merge at re-extraction taking an older upstream hunk verbatim,
  * exactly as MAINTAINING.md warns.
  *
- * KNOW WHAT THESE CANNOT SEE. Most read text, not behaviour. A `VALUES` list
+ * KNOW WHAT THESE CANNOT SEE. Most read text, not behavior. A `VALUES` list
  * whose consuming `for … loop` was deleted still matches; a `raise exception`
  * removed from an assertion block is invisible to a regex that matches the
  * `select` above it. So a green run here means "not obviously reverted", never
@@ -676,11 +680,12 @@ test("the Editor-path arm still converts to CRLF and applies the same chain", ()
     .filter(Boolean)
     .map((entry) => shellVars.get(entry) ?? entry);
 
-  // Every migration the repo ships, except 0003 — it seeds categories and carries
-  // no schema, so it cannot affect anything the boundary asserts. A mirror without
-  // it is still a mirror.
+  // Every migration the 0002 mutation suite owns. 0003 is data-only. 0007 adds
+  // a later branding boundary with its own apply-time and static assertions;
+  // replaying 0002 after it is intentionally invalid because 0002 pins the
+  // earlier function and policy set exactly.
   const shipped = readdirSync(path.join(ROOT, "supabase", "migrations"))
-    .filter((f) => f.endsWith(".sql") && !f.startsWith("0003"))
+    .filter((f) => f.endsWith(".sql") && !f.startsWith("0003") && !f.startsWith("0007"))
     .sort();
   const missing = shipped.filter((f) => !listed.some((entry) => entry.endsWith(`/${f}`)));
   assert.deepEqual(

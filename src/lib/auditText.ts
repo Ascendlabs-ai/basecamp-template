@@ -73,14 +73,14 @@ export function describeAuditRow(row: AuditRow): string {
         // this is unreachable by any write the app can make. Named rather than
         // silently falling through, because reaching it means the constraint
         // and this switch have drifted apart.
-        return `made an unrecognised account change for ${who}`;
+        return `made an unrecognized account change for ${who}`;
     }
   }
   // 'unknown' means a trigger is attached to a table this app does not model.
   // The database CHECK permits it precisely so that case is recorded rather than
   // rejected, so it must not render as an ordinary grant.
   if (row.source_table === "unknown") {
-    return "made a change on an unrecognised table — check the audit triggers";
+    return "made a change on an unrecognized table — check the audit triggers";
   }
   if (row.source_table === "super_admins") {
     return row.action === "grant"

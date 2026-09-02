@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import { Montserrat } from "next/font/google";
 
 import ThemeRegistry from "@/theme/ThemeRegistry";
-import { APP_NAME, CATALOG_TAGLINE } from "@/lib/brand";
+import { BRANDING_TAGLINE } from "@/lib/branding";
+import { getBranding } from "@/lib/brandingServer";
 
 const montserrat = Montserrat({
   variable: "--font-montserrat",
@@ -11,10 +12,12 @@ const montserrat = Montserrat({
   display: "swap",
 });
 
-export const metadata: Metadata = {
-  title: APP_NAME,
-  description: CATALOG_TAGLINE,
-};
+export const dynamic = "force-dynamic";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const branding = await getBranding();
+  return { title: branding.displayName, description: BRANDING_TAGLINE };
+}
 
 export default function RootLayout({
   children,

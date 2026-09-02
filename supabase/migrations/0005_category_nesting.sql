@@ -135,7 +135,7 @@ begin
     -- A, so this SELECT blocks and then re-reads on a fresh snapshot.
     --
     -- SHARE, not UPDATE: two children being added under the same parent are not
-    -- in conflict with each other and must not serialise.
+    -- in conflict with each other and must not serialize.
     select (c.parent_id is not null) into v_parent_has_parent
       from basecamp.categories c where c.id = new.parent_id for share;
 
@@ -265,7 +265,7 @@ do $$
 declare
   n integer;
 begin
-  -- 4a. The column, the FK and its delete behaviour. `confdeltype = 'r'` is
+  -- 4a. The column, the FK and its delete behavior. `confdeltype = 'r'` is
   -- RESTRICT; 'c' would be CASCADE, which is the outcome this migration exists
   -- to prevent.
   if not exists (

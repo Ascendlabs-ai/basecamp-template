@@ -2,9 +2,10 @@ import Box from "@mui/material/Box";
 import Paper from "@mui/material/Paper";
 
 import Logo from "./Logo";
+import type { Branding } from "@/lib/branding";
 
 /**
- * The centred, logo-topped card every signed-out screen sits in.
+ * The centered, logo-topped card every signed-out screen sits in.
  *
  * The signed-out pages each had a byte-identical copy of this — `/auth/confirm`
  * and `/accept-invite`, and a third before it was removed — down to the `100dvh`
@@ -18,7 +19,7 @@ import Logo from "./Logo";
  * would also capture `/login`, which has its own wider composition. A component
  * each page opts into keeps that choice explicit.
  */
-export default function AuthCard({ children }: { children: React.ReactNode }) {
+export default function AuthCard({ children, branding }: { children: React.ReactNode; branding: Branding }) {
   return (
     <Box
       sx={{
@@ -40,7 +41,7 @@ export default function AuthCard({ children }: { children: React.ReactNode }) {
         }}
       >
         <Box sx={{ mb: 2.5 }}>
-          <Logo variant="primary" height={44} />
+          <Logo variant="primary" height={44} branding={branding} />
         </Box>
         {children}
       </Paper>

@@ -151,7 +151,7 @@ alter table basecamp.access_audit
 --
 -- FAIL-CLOSED IS THE CALLER'S JOB TOO. This function raises rather than
 -- returning quietly when the caller is not an administrator or the action is
--- not recognised. src/lib/supabase/admin.ts calls it BEFORE the privileged
+-- not recognized. src/lib/supabase/admin.ts calls it BEFORE the privileged
 -- operation and abandons the request if it raises, so an unlogged ban is not
 -- possible: either the audit row exists or the ban never happened.
 -- ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ begin
   -- forbids it), which is exactly why the guard has to state it rather than rely
   -- on the caller.
   if p_action is null or p_action not in ('invite', 'reissue_link', 'ban', 'unban', 'adopt') then
-    raise exception 'unrecognised privileged action: %', p_action
+    raise exception 'unrecognized privileged action: %', p_action
       using errcode = 'invalid_parameter_value';
   end if;
 
@@ -203,7 +203,7 @@ begin
   -- BOTH LABELS ARE LOOKED UP, never taken from the caller. This is the pattern
   -- log_access_change() already follows at each of its four branches, and an
   -- earlier draft of this function broke it by accepting `p_subject_email` as
-  -- text: an administrator could record a ban of one person labelled with
+  -- text: an administrator could record a ban of one person labeled with
   -- another's address, and because this table is append-only by trigger the
   -- false label could never be corrected. The header claims this function pins
   -- every field a forger would want to control; the label is such a field.
@@ -249,7 +249,7 @@ grant execute on function basecamp.log_privileged_action(text, uuid) to authenti
 -- Everything that made the old function safe is carried over verbatim and is
 -- asserted below: SECURITY DEFINER, search_path TO '', the
 -- `where basecamp.is_super_admin()` gate whose empty result IS the
--- authorisation answer, and the `email is not null` filter.
+-- authorization answer, and the `email is not null` filter.
 --
 -- banned_until comes from auth.users. It is a ban STATE, not a sign-in time:
 -- the old function's comment records the deliberate decision not to expose
@@ -361,8 +361,8 @@ grant execute on function basecamp.list_people() to authenticated, service_role;
 -- ---------------------------------------------------------------------------
 insert into basecamp.member_types (slug, name, description, is_admin, is_system, sort_order) values
   ('staff',      'Staff',      'People on the team. The default for anyone you are onboarding.',              false, true, 10),
-  ('contractor', 'Contractor', 'Working with you for a while, but not of the organisation.',                  false, true, 20),
-  ('client',     'Client',     'Outside the organisation entirely. Grant this type the least, on purpose.',   false, true, 30)
+  ('contractor', 'Contractor', 'Working with you for a while, but not of the organization.',                  false, true, 20),
+  ('client',     'Client',     'Outside the organization entirely. Grant this type the least, on purpose.',   false, true, 30)
 on conflict (slug) do update set is_system = true;
 
 -- 0001's comment on this column predates the seed and said the opposite. It is

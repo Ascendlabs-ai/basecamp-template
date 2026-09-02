@@ -8,6 +8,7 @@ import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import LaunchRoundedIcon from "@mui/icons-material/LaunchRounded";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
 import SettingsRoundedIcon from "@mui/icons-material/SettingsRounded";
+import BrandingWatermarkOutlinedIcon from "@mui/icons-material/BrandingWatermarkOutlined";
 import Box from "@mui/material/Box";
 import IconButton from "@mui/material/IconButton";
 import Stack from "@mui/material/Stack";
@@ -17,6 +18,7 @@ import { visuallyHidden } from "@mui/utils";
 import type { SvgIconComponent } from "@mui/icons-material";
 
 import Logo from "@/components/Logo";
+import type { Branding } from "@/lib/branding";
 import { NAV_GROUP_LABEL, NAV_GROUP_ORDER } from "@/types/admin";
 import type { ShellIdentity, ShellNavItem } from "@/types/shell";
 
@@ -162,11 +164,13 @@ export default function SidebarContent({
   navItems,
   identity,
   canAdmin,
+  branding,
   onNavigate,
 }: {
   navItems: ShellNavItem[];
   identity: ShellIdentity;
   canAdmin: boolean;
+  branding: Branding;
   /** Closes the mobile drawer after a nav tap. */
   onNavigate?: () => void;
 }) {
@@ -191,7 +195,7 @@ export default function SidebarContent({
             follow theme mode or the reversed lockup vanishes in light mode.
             26px, not the handoff's 19px: that figure is for a wordmark-ONLY
             crop, and this asset is the mark+wordmark lockup. */}
-        <Logo variant="secondary" height={26} on="dark" />
+        <Logo variant="secondary" height={26} on="dark" branding={branding} />
       </Box>
 
       <SidebarSearch onNavigate={onNavigate} />
@@ -279,6 +283,13 @@ export default function SidebarContent({
               icon={SettingsRoundedIcon}
               label="Access"
               active={pathname.startsWith("/admin/access")}
+              onNavigate={onNavigate}
+            />
+            <NavItem
+              href="/admin/branding"
+              icon={BrandingWatermarkOutlinedIcon}
+              label="Branding"
+              active={pathname.startsWith("/admin/branding")}
               onNavigate={onNavigate}
             />
           </Box>

@@ -15,9 +15,9 @@ import Typography from "@mui/material/Typography";
 import { sameOriginPath } from "@/lib/safeRedirect";
 import { classifySignInError } from "@/lib/signInError";
 import { createClient } from "@/lib/supabase/client";
-import { APP_NAME, CATALOG_TAGLINE } from "@/lib/brand";
+import { BRANDING_TAGLINE, type Branding } from "@/lib/branding";
 
-export default function LoginForm() {
+export default function LoginForm({ branding }: { branding: Branding }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
@@ -79,10 +79,10 @@ export default function LoginForm() {
       <Stack spacing={2.5}>
         <Box>
           <Typography variant="h5" component="h1" sx={{ fontWeight: 700, mb: 0.5 }}>
-            Sign in to {APP_NAME}
+            Sign in to {branding.displayName}
           </Typography>
           <Typography variant="body2" sx={{ color: "text.secondary" }}>
-            {CATALOG_TAGLINE}
+            {BRANDING_TAGLINE}
           </Typography>
         </Box>
 

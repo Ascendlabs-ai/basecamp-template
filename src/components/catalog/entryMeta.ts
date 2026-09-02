@@ -3,10 +3,10 @@ import type { Theme } from "@mui/material/styles";
 import type { EntryStatus } from "@/types/catalog";
 
 /**
- * Status -> colour. fg is the TEXT token, ring the FILL token; they differ on
+ * Status -> color. fg is the TEXT token, ring the FILL token; they differ on
  * purpose, because the fill tokens measure 2.07-3.44:1 as text on their own
  * tint (under WCAG AA), so the readable text uses the *Text tokens and the fill
- * is demoted to a 1px ring. Colour is never the only carrier — the chip always
+ * is demoted to a 1px ring. Color is never the only carrier — the chip always
  * shows the status word as text (WCAG 1.4.1).
  */
 export function statusColors(theme: Theme, status: EntryStatus) {

@@ -59,7 +59,7 @@ test("blocks every off-origin payload", () => {
  * exactly "/" here would be asserting an implementation detail and would fail a
  * correct implementation, which is precisely what it did on first writing.
  */
-test("payloads that survive sanitisation stay on our own origin", () => {
+test("payloads that survive sanitization stay on our own origin", () => {
   for (const payload of [
     "/..//evil.com",
     `${ORIGIN}//evil.com`,

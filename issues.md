@@ -34,7 +34,7 @@ still makes sense.
       waiting for it. Until it's filled in, your assistant can't find the shared documents and will
       have to ask you every time.
 
-- [ ] **Put your own name on it.** Four places — name, logo, colours, icons — all shipping as
+- [ ] **Put your own name on it.** Four places — name, logo, colors, icons — all shipping as
       neutral placeholders. The table of exactly which files is in `README.md` under Rebranding.
 
 - [ ] **Delete `MAINTAINING.md` and `docs/`.** Both are for whoever maintains the template rather
@@ -104,7 +104,7 @@ moment they come up.
       and **Issue a sign-in link** display the link for you to pass on. There is no
       forgot-password form to configure. Supabase itself will still mail a confirmation when
       somebody signs up on your project, and the built-in mailer delivers only to members of your
-      own Supabase organisation at roughly two messages an hour — so if you ever add a flow of
+      own Supabase organization at roughly two messages an hour — so if you ever add a flow of
       your own that depends on delivery, attach your own SMTP **and** raise the rate limit
       together. Each fails silently on its own; `supabase/README.md` has both.
 
@@ -350,7 +350,7 @@ answer, and it costs nothing to do at the start.
 Ideas worth keeping but not doing yet. Tag each one `(small)` or `(bigger)` so you can pick
 something that fits the time you have.
 
-- **Check the colours really are all in one place.** `(small)` A few focus-ring colours sit
+- **Check the colors really are all in one place.** `(small)` A few focus-ring colors sit
   outside the palette; the caveat is written up in `README.md` under Rebranding.
 
 - **Add person reads the whole roster to match one email.** `(small)` `POST /api/admin/people`

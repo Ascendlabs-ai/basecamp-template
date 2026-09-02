@@ -9,6 +9,7 @@ import Drawer from "@mui/material/Drawer";
 import IconButton from "@mui/material/IconButton";
 
 import type { ShellIdentity, ShellNavItem } from "@/types/shell";
+import type { Branding } from "@/lib/branding";
 
 import SidebarContent from "./SidebarContent";
 
@@ -41,11 +42,13 @@ export default function AppShell({
   navItems,
   identity,
   canAdmin,
+  branding,
   children,
 }: {
   navItems: ShellNavItem[];
   identity: ShellIdentity;
   canAdmin: boolean;
+  branding: Branding;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -90,7 +93,7 @@ export default function AppShell({
           height: "100dvh",
         }}
       >
-        <SidebarContent navItems={navItems} identity={identity} canAdmin={canAdmin} />
+        <SidebarContent navItems={navItems} identity={identity} canAdmin={canAdmin} branding={branding} />
       </Box>
 
       {/* Below lg: overlay drawer. Portal-rendered, so it contributes nothing
@@ -113,6 +116,7 @@ export default function AppShell({
           navItems={navItems}
           identity={identity}
           canAdmin={canAdmin}
+          branding={branding}
           onNavigate={close}
         />
       </Drawer>

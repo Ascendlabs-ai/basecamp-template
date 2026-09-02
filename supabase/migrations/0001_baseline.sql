@@ -23,9 +23,9 @@
 -- moved upstream is a guard this repo can no longer see.
 --
 -- Hand edits that ARE still applied here and must be RE-APPLIED on any
--- regeneration: two enum labels naming the originating organisation's own
+-- regeneration: two enum labels naming the originating organization's own
 -- infrastructure were renamed to `platform_auth`/`external_auth`, and COMMENT
--- strings naming that organisation, its issue tracker or its migration versions
+-- strings naming that organization, its issue tracker or its migration versions
 -- were rewritten. See MAINTAINING.md -> "The SQL hand edits".
 --
 -- ONE SPLICE, 2026-08-17, recorded because the stamp below moved without a
@@ -694,7 +694,7 @@ CREATE TABLE basecamp.categories (
 -- Name: TABLE categories; Type: COMMENT; Schema: basecamp; Owner: -
 --
 
-COMMENT ON TABLE basecamp.categories IS 'Groupings used to organise catalog entries in the Basecamp UI.';
+COMMENT ON TABLE basecamp.categories IS 'Groupings used to organize catalog entries in the Basecamp UI.';
 
 
 --
@@ -1731,5 +1731,3 @@ ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA basecamp GRANT SELECT,INSER
 --
 -- PostgreSQL database dump complete
 --
-
-

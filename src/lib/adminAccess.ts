@@ -13,8 +13,8 @@ import type {
 
 /**
  * Access-screen logic. Lives in `src/lib/` — not `src/types/` — because it is
- * executable behaviour, and the repo convention is "run the tests after
- * touching anything under `src/lib/`". Behaviour parked in a module named
+ * executable behavior, and the repo convention is "run the tests after
+ * touching anything under `src/lib/`". Behavior parked in a module named
  * `types` sits outside the one trigger the convention names, and the test file
  * for it was already reaching out of `lib/` to import it.
  *
@@ -149,7 +149,7 @@ export function isBanned(person: { banned_until: string | null }): boolean {
  * inline comment below records having fixed in the code while this paragraph
  * kept the wrong number.)
  *
- * Returns null when the error is not one of the recognised guards, so the
+ * Returns null when the error is not one of the recognized guards, so the
  * caller falls through to its ordinary `failedWrite` message rather than
  * inventing an explanation for something else.
  */
@@ -164,7 +164,7 @@ export function describeTrustRootRefusal(
   // 23001 is `restrict_violation`, which is what the last-admin trigger raises.
   // An earlier version wrote 2F003 — that is
   // `prohibited_sql_statement_attempted`, so the branch was dead and the guard
-  // was recognised only by its English message. `deleteType` in catalogAdmin.ts
+  // was recognized only by its English message. `deleteType` in catalogAdmin.ts
   // already had this right.
   if (error.code === "23001" || error.code === "P0001") {
     return "The database refused that change to the administrator list.";

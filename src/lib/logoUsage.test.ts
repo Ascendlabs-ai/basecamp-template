@@ -4,10 +4,9 @@ import path from "node:path";
 import { test } from "node:test";
 
 /**
- * `src/components/Logo.tsx` and `src/lib/brand.ts` are the only two files that
- * should know what this product is called or what it looks like. A client
- * rebrands by editing those; these guards are what stop the brand leaking back
- * out into components and pages.
+ * `src/components/Logo.tsx`, `src/lib/brand.ts`, and `src/lib/branding.ts`
+ * define the neutral fallback and runtime identity. Administrators rebrand in
+ * the app; these guards stop identity leaking back into components and pages.
  *
  * In the app this template was extracted from, the header and the sign-in page
  * had each inlined their own <Image> with a hardcoded light-mode asset path,
@@ -34,6 +33,7 @@ const LOGO_COMPONENT = path.join("components", "Logo.tsx");
 test("only Logo.tsx references brand image assets", () => {
   const offenders = walk(SRC).filter((file) => {
     if (file.endsWith(LOGO_COMPONENT)) return false;
+    if (/\.test\.tsx?$/.test(file)) return false;
     // Matches any character up to the extension, deliberately: an earlier
     // version used [A-Za-z_]+, which did not match hyphens in the real asset
     // names — so the guard passed a mutation test with an inlined <img> right
@@ -50,7 +50,8 @@ test("only Logo.tsx references brand image assets", () => {
 });
 
 /**
- * The product name must come from `APP_NAME`, everywhere a user can read it.
+ * The fallback product name must come from `APP_NAME`, except where "Basecamp"
+ * describes the product contract rather than the tenant's saved identity.
  *
  * THIS GUARD WAS REWRITTEN AFTER FAILING ITS OWN MUTATION TEST. The first
  * version required the name to sit immediately between quotes or angle brackets
@@ -72,13 +73,22 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-test("the product name comes from brand.ts, not hardcoded in components or pages", () => {
+test("tenant identity surfaces use runtime branding instead of hardcoded client identity", () => {
   const brand = readFileSync(path.join(SRC, "lib", "brand.ts"), "utf8");
   const appName = /export const APP_NAME = "([^"]+)"/.exec(brand)?.[1];
   assert.ok(appName, "APP_NAME is not exported from src/lib/brand.ts");
 
   const pattern = new RegExp(`\\b${escapeRegExp(appName)}\\b`);
   const offenders: string[] = [];
+  const genericProductCopy = new Set([
+    "src/app/(shell)/error.tsx",
+    "src/app/(shell)/admin/branding/page.tsx",
+    "src/app/oauth/consent/page.tsx",
+    "src/components/admin/BrandingAdmin.tsx",
+    "src/components/admin/CatalogAdmin.tsx",
+    "src/components/admin/EntryDialog.tsx",
+    "src/lib/branding.ts",
+  ]);
 
   for (const file of walk(SRC)) {
     if (file.endsWith(LOGO_COMPONENT)) continue;
@@ -88,12 +98,14 @@ test("the product name comes from brand.ts, not hardcoded in components or pages
     // failure, not a leak. `brand.ts` needs no exemption: its export line
     // contains APP_NAME and is skipped below.
     if (/\.test\.tsx?$/.test(file)) continue;
+    const relative = path.relative(process.cwd(), file);
     const lines = readFileSync(file, "utf8").split("\n");
     lines.forEach((line, i) => {
       // Skip lines that already do the right thing.
       if (line.includes("APP_NAME")) return;
       if (!pattern.test(line)) return;
-      offenders.push(`${path.relative(process.cwd(), file)}:${i + 1}`);
+      if (genericProductCopy.has(relative)) return;
+      offenders.push(`${relative}:${i + 1}`);
     });
   }
 

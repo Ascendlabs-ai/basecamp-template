@@ -24,7 +24,7 @@ import type { CatalogEntry } from "@/types/catalog";
 import StatusChip from "./StatusChip";
 import { humanise } from "./entryMeta";
 
-/** One labelled fact. The label is the quiet part; the value carries weight. */
+/** One labeled fact. The label is the quiet part; the value carries weight. */
 function Fact({
   icon,
   label,

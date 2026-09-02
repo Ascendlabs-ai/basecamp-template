@@ -85,7 +85,7 @@ insert into basecamp.categories (slug, name, description, sort_order) values
 on conflict (slug) do nothing;
 
 insert into basecamp.entries (category_id, slug, display_name, technical_name, description, entry_type, status, host, auth_boundary, trigger_type, owner, launch_url, repo_url, runbook_url, source_of_truth_note, sort_order)
-select c.id, 'brand-kit', 'Brand Kit', 'brand-kit', 'Logos, colour tokens and type scale.', 'reference_only'::basecamp.entry_type, 'active'::basecamp.entry_status, 'none'::basecamp.entry_host, 'none'::basecamp.entry_auth_boundary, 'manual'::basecamp.entry_trigger_type, 'Design', null, null, null, 'Provenance: inherited from the previous inventory; re-verify before relying on it.', 10
+select c.id, 'brand-kit', 'Brand Kit', 'brand-kit', 'Logos, color tokens and type scale.', 'reference_only'::basecamp.entry_type, 'active'::basecamp.entry_status, 'none'::basecamp.entry_host, 'none'::basecamp.entry_auth_boundary, 'manual'::basecamp.entry_trigger_type, 'Design', null, null, null, 'Provenance: inherited from the previous inventory; re-verify before relying on it.', 10
   from basecamp.categories c where c.slug = 'reference'
 on conflict (slug) do nothing;
 

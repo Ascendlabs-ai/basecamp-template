@@ -101,7 +101,7 @@ test("an absurdly long address is refused before it reaches the network", () => 
   assert.equal(isEmailShaped(`${"a".repeat(250)}@example.com`), false);
 });
 
-test("normalising lowercases and trims, because GoTrue does too", () => {
+test("normalizing lowercases and trims, because GoTrue does too", () => {
   assert.equal(normaliseEmail("  Sam@Example.ORG "), "sam@example.org");
 });
 
@@ -109,12 +109,12 @@ test("normalising lowercases and trims, because GoTrue does too", () => {
 // isAlreadyRegistered — the difference between onboarding working and a 422
 // ---------------------------------------------------------------------------
 
-test("the already-registered case is recognised by code", () => {
+test("the already-registered case is recognized by code", () => {
   assert.equal(isAlreadyRegistered({ code: "email_exists" }), true);
   assert.equal(isAlreadyRegistered({ code: "user_already_exists" }), true);
 });
 
-test("the already-registered case is recognised by message when the code changes", () => {
+test("the already-registered case is recognized by message when the code changes", () => {
   // Not belt-and-braces for its own sake: this branch is the difference between
   // "add an existing person" working and an administrator seeing an opaque 422,
   // so it does not rest on one field surviving a Supabase upgrade.

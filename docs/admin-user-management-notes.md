@@ -104,7 +104,7 @@ assertions did not need to be weakened at all. Its body is digest-pinned in `000
 is taken over line-ending-normalized text for the reason `0002` records at its own pins.
 
 **CHANGED — two arguments, not three.** The design named a third, the subject's *email*. Accepting
-it as text let an administrator record a ban of one person labelled with another's address, and
+it as text let an administrator record a ban of one person labeled with another's address, and
 because `access_audit` is append-only the false label could never be corrected. Both labels are
 looked up from `auth.users` inside the function instead; the caller names only the subject's id.
 
@@ -121,7 +121,7 @@ them. This migration grants them. Lockout stays impossible: the
   confirm the assignment it just made.
 
 The function keeps its `SECURITY DEFINER`, its `search_path TO ''`, its `where basecamp.is_super_admin()`
-gate, and its `email is not null` filter. The empty result remains the authorisation answer.
+gate, and its `email is not null` filter. The empty result remains the authorization answer.
 
 **Keep `0002_security_boundary.sql` honest.** That file asserts the privilege surface at apply time
 and raises if it finds something unexpected. Its assertions must be updated in the same change, or
@@ -148,7 +148,7 @@ and its file comment says so.
 
 ### The routes
 
-| Route | Behaviour |
+| Route | Behavior |
 |---|---|
 | `POST /api/admin/people` | `generateLink({ type: 'invite' })` creates the account and returns the link without sending mail; insert the `basecamp.members` row with the chosen `member_type_id`; return the link once. |
 | `POST /api/admin/people/[id]/link` | `generateLink({ type: 'recovery' })` for an existing person. Returns the link once. |

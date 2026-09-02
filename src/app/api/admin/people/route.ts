@@ -6,7 +6,7 @@ import {
   isDenied,
   logPrivilegedAction,
   requireSuperAdmin,
-  type Authorised,
+  type Authorized,
 } from "@/lib/supabase/admin";
 import { buildSignInUrl, isEmailShaped, normaliseEmail } from "@/lib/adminLink";
 
@@ -237,7 +237,7 @@ export async function POST(request: Request) {
  * constraint on `members.user_id` is what makes this well-defined.
  */
 async function assignType(
-  caller: Authorised["caller"],
+  caller: Authorized["caller"],
   userId: string,
   memberTypeId: string,
 ): Promise<boolean> {

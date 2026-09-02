@@ -48,7 +48,7 @@ export async function updateSession(request: NextRequest) {
   // `Sec-Fetch-Site` is a forbidden header — page JavaScript cannot set it —
   // and a missing one falls through to the Origin comparison, so a client that
   // sends neither is treated as same-origin, which is the pre-existing
-  // behaviour rather than a new hole.
+  // behavior rather than a new hole.
   // FIRST, not after getUser(). Placed later, every refused cross-site request
   // still cost a GoTrue round trip, so any third-party page could drive load on
   // the auth endpoint for free — and worse, the 403 returned without copying
@@ -149,7 +149,7 @@ export async function updateSession(request: NextRequest) {
     // covers every present and future route; a non-navigation request just gets
     // a 401 it can read. `sec-fetch-dest` is sent by every browser that can
     // reach this app, and its absence is treated as a navigation — the
-    // conservative direction, since that preserves the old behaviour.
+    // conservative direction, since that preserves the old behavior.
     if (request.headers.get("sec-fetch-dest") !== "document") {
       const refused = NextResponse.json({ error: "Not signed in." }, { status: 401 });
       response.cookies.getAll().forEach((cookie) => refused.cookies.set(cookie));

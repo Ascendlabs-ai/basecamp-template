@@ -11,7 +11,7 @@ const getServerSnapshot = () => false;
  * `false` on the server and during the hydration render, `true` afterwards.
  *
  * Exists for one job: letting a component render markup that is IDENTICAL on
- * both sides, then opt into client-only behaviour on the next commit.
+ * both sides, then opt into client-only behavior on the next commit.
  *
  * `useSyncExternalStore` rather than `useState` + `useEffect` because this
  * repo's react-hooks config rejects set-state-in-effect (see CatalogView, which

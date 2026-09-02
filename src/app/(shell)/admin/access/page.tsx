@@ -11,7 +11,7 @@ import Typography from "@mui/material/Typography";
 import AccessAdmin from "@/components/admin/AccessAdmin";
 import TopBar from "@/components/shell/TopBar";
 import { describeError } from "@/lib/adminAccess";
-import { APP_NAME } from "@/lib/brand";
+import { getBranding } from "@/lib/brandingServer";
 import { createClient } from "@/lib/supabase/server";
 import type {
   AuditRow,
@@ -25,9 +25,10 @@ import type {
 
 export const dynamic = "force-dynamic";
 
-export const metadata = {
-  title: `Access · Admin · ${APP_NAME}`,
-};
+export async function generateMetadata() {
+  const branding = await getBranding();
+  return { title: `Access · Admin · ${branding.displayName}` };
+}
 
 /**
  * Admin · Access.
