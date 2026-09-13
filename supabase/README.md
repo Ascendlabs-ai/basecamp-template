@@ -1,9 +1,25 @@
 # Provisioning the database
 
 Seven SQL files, applied in order, then one INSERT to create the first
-administrator. Nothing else. **Only the third is optional** — it is starter
-categories and nothing more; the other six build the schema, lock it, and open
-the write paths the admin screens use.
+administrator. **Only the third is optional** — it is starter categories and
+nothing more; the other six build the schema, lock it, and open the write paths
+the admin screens use.
+
+## Two dashboard steps no migration can perform
+
+Read this before the file list. A database that has taken every migration
+cleanly can still be non-functional, or functional and unprotected, if either
+of these is missed — and neither leaves a trace in the database, so nothing
+below can assert them. Both are Supabase project settings, in this order:
+
+| When | Where | What | If skipped |
+|---|---|---|---|
+| **Before** `0001` | Dashboard → Integrations → Data API → Settings → **Exposed schemas** | Add `basecamp`. Step 0 below. | PostgREST answers `PGRST106` to every request. The app shows an error while the database looks perfectly healthy. |
+| **After** `0006` | Dashboard → Authentication → **Hooks** | Enable **Customize Access Token (JWT) Claims** → Postgres → `basecamp` / `custom_access_token_hook`. Step 1c below. | The hook `0006` created sits inert. **The catalog is unaffected** — no policy reads its claims, proven in step 4b. **Basecamp SSO token issuance is unprotected**: Supabase issues an OAuth token to any account on the project for any registered client, with no access check. Nothing looks wrong. |
+
+The second cannot come first: the dashboard lets you pick the hook only once
+the function exists, and `0006` is what creates it. Step 4b is how you prove
+both took, because "all migrations succeeded" does not mean either did.
 
 | File | What it is |
 |---|---|
@@ -12,9 +28,9 @@ the write paths the admin screens use.
 | `migrations/0003_seed_categories.sql` | Hand-written, and **optional**. Four starter categories — Sales, Marketing, Operations, Useful Tools — so a new app has somewhere to put its first entry. Contains no schema at all. Idempotent, and safe to skip entirely. |
 | `migrations/0004_admin_write_paths.sql` | Hand-written, and **required**. Opens the trust root's INSERT/DELETE so administrators can promote each other from the app, adds `basecamp.log_privileged_action()`, widens `list_people()` with ban state and member type, and seeds the three starter member types **Add person** needs in order to offer anything. Without it **Add person** and the roster's ⋮ menu do not work. Idempotent, and it asserts its own post-conditions the way `0002` does. |
 | `migrations/0005_category_nesting.sql` | Hand-written, and **required** — not optional. The home page, the catalog admin and the access matrix all `select` `categories.parent_id`, so without this migration all three fail with `42703 column does not exist`. Adds `categories.parent_id`, an ON DELETE RESTRICT self-reference, and `enforce_category_depth()` — the trigger that caps nesting at one level in both directions. Adds no grant and no policy: `authenticated` already held all four verbs on `categories` from 0001, so nesting is decided by the policies that were already there. Idempotent, atomic, and asserts its own post-conditions. |
-| `migrations/0006_product_contract.sql` | Hand-written and **required**. Adds active/everyone/selected app settings, OAuth client mappings, configuration audit, RLS enforcement, and the token-time entitlement hook. |
+| `migrations/0006_product_contract.sql` | Hand-written and **required**. Adds active/everyone/selected app settings, OAuth client mappings, configuration audit, RLS enforcement, and the token-time entitlement hook. **The hook is created inert**: Supabase calls it only after step 1c enables it in the dashboard. |
 | `migrations/0007_branding_settings.sql` | Hand-written and **required**. Adds administrator-managed Basecamp identity settings, an append-only branding audit, the narrow signed-out branding projection, and a constrained public logo bucket. |
-| `tests/` | Not applied to your database. `boundary_mutations.sh` is the proof that `0002`'s assertions actually catch things, and `_supabase_surface_stub.sql` is what lets a bare PostgreSQL cluster stand in for Supabase while it runs. Optional; see step 1. |
+| `tests/` | Not applied to your database. `boundary_mutations.sh` is the proof that `0002`'s assertions actually catch things, that the database refuses a real session, and that the catalog does not depend on the token hook; `_supabase_surface_stub.sql` is what lets a bare PostgreSQL cluster stand in for Supabase while it runs. Optional; see step 1. |
 
 > **On the filenames.** These are numbered `0001`/`0002` rather than carrying the
 > Supabase CLI's 14-digit timestamps, because they are applied once at
@@ -190,7 +206,7 @@ plausible total while proving less.
 |---|---|
 | Static, `psql` | break one thing in a mirror, require `0002` to refuse |
 | Static, **Editor path** | the same, with the migrations pasted CRLF and whole-file, the way a client applies them |
-| Runtime | issue real statements as `authenticated` and require the **database** to refuse |
+| Runtime | issue real statements as `authenticated` and require the **database** to refuse — including, in PART 16, a token the access-token hook never touched and a token carrying a forged `basecamp_access` claim, both of which must see nothing |
 | `0004` under test | break something *before* `0004` runs, and require `0004` to refuse |
 
 A handful of cases expect a **commit** and print `PASS [COMMITTED]`; that is
@@ -254,6 +270,44 @@ somebody points at a machine they do not have. Set this before you add your
 first person — and if a link ever looks like it is aimed at the wrong host, this
 is the setting, not a bug in the app.
 
+### 1c. Enable the access-token hook — after `0006`, before any SSO client
+
+Dashboard → **Authentication → Hooks** → **Customize Access Token (JWT)
+Claims** → hook type **Postgres** → schema `basecamp`, function
+`custom_access_token_hook` → **Enable**.
+
+`0006` creates the function and grants `supabase_auth_admin` the right to run
+it — and that is all a migration can do. Supabase Auth calls a hook only once
+it is enabled here, so until this step the function exists, passes every
+assertion in `0006`, and is never invoked. Nothing in the database records
+whether it is enabled; the dashboard and the Management API are the only places
+that know.
+
+**What the hook decides, and what it does not.** It runs at token issuance. For
+an ordinary Basecamp sign-in — no OAuth client involved — it returns the claims
+untouched, so a normal session JWT looks identical with the hook on or off. For
+a token requested by a registered **Basecamp SSO** client it checks, as
+Supabase Auth, that the app is active and that the person has access, and
+refuses issuance with a 403 if not. That refusal is the only thing this step
+turns on:
+
+- **Catalog, grants, roster, audit: unaffected either way.** No row-level policy
+  reads the hook's claims. A person with no grant sees nothing with the hook
+  off, and sees nothing with a *forged* `basecamp_access` claim — both proven by
+  execution in `supabase/tests/boundary_mutations.sh`, PART 16. An inert hook
+  neither opens nor locks the app.
+- **Basecamp SSO with the hook off is fail-open at the token endpoint.**
+  `/oauth/consent` and `/api/oauth/decision` refuse to *approve* a client the
+  signed-in person cannot see, but a consent Supabase already holds on file
+  skips them both, and nothing then stands between a project account and a
+  token for any registered client. The hook is the check that runs on every
+  issuance regardless of route.
+
+**If you never configure a Basecamp SSO client, the hook has nothing to
+decide.** Enable it anyway — it costs nothing, and the first SSO client added
+in **Admin → Catalog** is then protected from the moment it is registered
+rather than from the moment somebody remembers this page.
+
 ### 2. Create the administrator's account
 
 Dashboard → **Authentication → Users → Add user**. This is the *only* account
@@ -295,8 +349,9 @@ every install — which is why step 4 exists.
 
 ### 4. Verify before you trust it
 
-`cp .env.local.example .env.local`, fill in the values — the two required ones,
-plus `SUPABASE_SERVICE_ROLE_KEY` if you want **Add person** to work — then
+`cp .env.local.example .env.local`, fill in all four launch values — including
+the client-owned `BASECAMP_SITE_URL` and server-only
+`SUPABASE_SERVICE_ROLE_KEY` — then
 `npm run dev`, sign in as that account, and confirm **`/admin/access` renders
 the administration screen** rather than the locked panel.
 
@@ -304,6 +359,78 @@ The install is not complete until you have seen that. The locked panel is what
 the screen looks like when the database says you are not an administrator — it
 is a consequence of the policy answer, not a separate check, so seeing the real
 screen is the only proof the trust root took.
+
+### 4b. Prove the environment, not only the migrations
+
+Every migration commits with assertions, so a clean run proves the *schema*.
+It proves nothing about the two dashboard settings at the top of this file,
+because neither leaves a mark in the database. Run through all four of these;
+each is a check with a wrong answer you can recognise.
+
+**1. The schema is exposed.** From a terminal, with the anon key from Project
+Settings → API:
+
+```bash
+curl -s "$NEXT_PUBLIC_SUPABASE_URL/rest/v1/entries?select=id&limit=1" \
+  -H "apikey: $NEXT_PUBLIC_SUPABASE_ANON_KEY" \
+  -H "Accept-Profile: basecamp"
+```
+
+| Response | Meaning |
+|---|---|
+| HTTP 401, `"code":"42501"` — `permission denied for schema basecamp` | **Correct.** PostgREST reached the schema; `anon` holds nothing there, exactly as `0002` asserts. |
+| `"code":"PGRST106"` — schema must be one of … | Step 0 was skipped, or `basecamp` was dropped from the list. Nothing in the database is wrong. |
+| `[]` or rows | `anon` has been granted something in `basecamp`. `0002` refuses that on a re-run; find out who granted it. |
+
+**2. The hook is enabled.** Dashboard → Authentication → Hooks must show
+**Customize Access Token (JWT) Claims** as *Enabled*, pointing at
+`basecamp.custom_access_token_hook`. If you would rather check from a script —
+say, before every deploy — the Management API returns the same two facts, given
+a personal access token from Account → Access Tokens:
+
+```bash
+curl -s "https://api.supabase.com/v1/projects/$PROJECT_REF/config/auth" \
+  -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+  | grep -o '"hook_custom_access_token_[a-z]*":[^,]*'
+```
+
+Expected: `"hook_custom_access_token_enabled":true` and a
+`hook_custom_access_token_uri` ending in `basecamp/custom_access_token_hook`.
+**No SQL can answer this** — the setting lives in Supabase Auth, not in
+Postgres, and a session JWT cannot either, because the hook leaves first-party
+tokens untouched (step 1c).
+
+**3. The hook's logic answers correctly on your data.** In the SQL Editor,
+which runs as `postgres` and so may call the function:
+
+```sql
+select basecamp.custom_access_token_hook(jsonb_build_object(
+  'user_id', 'A-USER-UUID-WITH-NO-ACCESS',
+  'claims',  jsonb_build_object('sub', 'A-USER-UUID-WITH-NO-ACCESS',
+                                'client_id', 'A-REGISTERED-CLIENT-UUID')));
+```
+
+Expected: `{"error": {"http_code": 403, "message": "You do not have access to
+this Basecamp app."}}`. Repeat with a granted person's uuid and expect
+`"basecamp_access": "granted"` in the claims. This proves what the function
+*would* say. Check 2 is what proves Supabase asks it.
+
+**4. A denied person is actually denied, end to end.** This is the check the
+first three approximate, and it is the one to do before onboarding anyone.
+Add a person from `/admin/access` with a member type and **no grants**, sign
+in as them, and confirm the home screen is the empty-catalog panel and
+`/admin/access` is the locked panel. If you have configured a Basecamp SSO
+client, also open `/sso/reference` as that person and confirm **SSO did not
+complete** — then as yourself, granted, and confirm it succeeds. The refusal
+is the hook; the success is the positive control that the hook is not simply
+refusing everyone.
+
+The same four, as a list to tick off:
+
+- [ ] `curl` against `/rest/v1/entries` with `Accept-Profile: basecamp` returns `42501`, not `PGRST106`
+- [ ] Authentication → Hooks shows the access-token hook **Enabled** on `basecamp.custom_access_token_hook`
+- [ ] The hook returns a 403 object for a no-access uuid and `granted` claims for a granted one
+- [ ] A signed-in person with a type and no grants sees the empty catalog and the locked admin panel; with SSO configured, their `/sso/reference` run fails and yours succeeds
 
 ### 5. Build your catalog
 
@@ -380,9 +507,9 @@ Then grant them something — an entry, a category, or a grant on their type —
 have them confirm they see it. **Somebody with a type but no grants sees an empty
 catalog, and that is the access model working**, not a failure of this step.
 
-If the link points at `http://localhost:3000` when you did not expect it, that is
-step 1b, not a bug. If **Add person** says the service-role key is missing, that
-is step 4.
+If the link uses a Vercel deployment hostname instead of the client-owned
+domain, `BASECAMP_SITE_URL` is missing or incorrect. If **Add person** says the
+service-role key is missing, that is step 4.
 
 Afterwards, each person's ⋮ menu offers **Issue a sign-in link** for anyone
 locked out, **Make / remove an administrator**, and **Suspend / restore
@@ -618,9 +745,11 @@ Supabase, then add the same public client UUID and exact redirect URI in
 belong in the Basecamp tables.
 
 The database checks app activity and effective access again while Supabase
-issues a token. Disabling an app therefore denies token issuance to everyone,
-including Basecamp administrators, while administrators retain catalog access
-to repair or reconfigure it.
+issues a token — **once the hook is enabled in the dashboard (step 1c)**.
+Disabling an app therefore denies token issuance to everyone, including
+Basecamp administrators, while administrators retain catalog access to repair
+or reconfigure it. With the hook not enabled there is no token-time check at
+all; step 4b is how you confirm it is live before registering a client.
 
 The built-in `/sso/reference` client is an optional protocol check. Register
 its deployed `/sso/reference/callback` URL, set the public client identifier as

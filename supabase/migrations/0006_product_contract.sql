@@ -275,7 +275,6 @@ revoke insert, update, delete, truncate on basecamp.app_configuration_audit from
 revoke all on function basecamp.enforce_oauth_client_mapping() from public, anon, authenticated, service_role;
 revoke all on function basecamp.audit_app_configuration() from public, anon, authenticated, service_role;
 revoke all on function basecamp.refuse_app_configuration_audit_mutation() from public, anon, authenticated, service_role;
-+
 create or replace function basecamp.configure_app(
   p_entry_id uuid,
   p_access_mode text,
@@ -426,6 +425,12 @@ begin
      or has_table_privilege('authenticated', 'basecamp.app_configuration_audit', 'truncate') then
     raise exception 'app configuration audit must remain append-only to clients';
   end if;
+
+  -- Not an assertion: a reminder, printed where the person applying this file
+  -- is looking. The hook above is created and granted, and that is everything
+  -- SQL can do. Supabase Auth calls it only once it is enabled in the
+  -- dashboard, and nothing in this database records whether that happened.
+  raise notice '0006 applied. basecamp.custom_access_token_hook is created but NOT yet called: enable it at Dashboard -> Authentication -> Hooks (see supabase/README.md, step 1c). Until then Basecamp SSO token issuance has no access check; the catalog is unaffected.';
 end $$;
 
 commit;

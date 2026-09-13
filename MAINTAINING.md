@@ -129,13 +129,18 @@ exists upstream:
    exists to end. That is not hypothetical either: the ported `0004` arrived with
    a raw `md5(prosrc)` pin, and reverting to it makes the psql arm report 110
    passed while every Editor case fails at `0004 via editor path`;
-7. **PARTS 14-15, the runtime arms**, with `EXPECTED_RLS_CASES` and
+7. **PARTS 14-16, the runtime arms**, with `EXPECTED_RLS_CASES` and
    `run_rls_assert`. These ask a different question from everything else in the
    file: not "does `0002` refuse a broken schema?" but "does the DATABASE refuse
    a real session?" Since `0004` grants `authenticated` INSERT and DELETE on the
    trust root, no schema assertion can answer the second — the privilege being
-   there is now correct, and only a policy stops a non-administrator using it;
-8. **PART 16, `0004` as the file under test**, with `EXPECTED_M4_CASES` and
+   there is now correct, and only a policy stops a non-administrator using it.
+   PART 16 is the access-token hook: it proves no policy reads the hook's claims
+   (a claim-less token and a forged one both see nothing) and that the hook
+   itself refuses a no-access member, so an inert hook — the state every stamp
+   is in until somebody enables it in the dashboard — neither opens nor locks
+   the catalog;
+8. **PART 17, `0004` as the file under test**, with `EXPECTED_M4_CASES` and
    `run_0004_case`. Every other static case re-runs `0002`, which left roughly
    half of `0004`'s own post-conditions unable to fail: they guard objects `0004`
    itself creates a few hundred lines earlier. These break things BEFORE `0004`

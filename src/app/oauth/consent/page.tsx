@@ -27,8 +27,11 @@ export default async function OAuthConsentPage({ searchParams }: { searchParams:
   const { data: auth, error } = await supabase.auth.oauth.getAuthorizationDetails(authorizationId);
   if (error || !auth) return <ConsentError branding={branding} message="This authorization request is invalid or has expired." />;
 
-  // Supabase may return a redirect immediately for consent already on file.
-  // Token issuance is still fail-closed by basecamp.custom_access_token_hook.
+  // Supabase may return a redirect immediately for consent already on file,
+  // skipping the mapping check below. Token issuance is then fail-closed ONLY
+  // if basecamp.custom_access_token_hook has been enabled in the dashboard
+  // (supabase/README.md, step 1c) — no migration can enable it, and with it off
+  // Supabase issues the token without consulting Basecamp access at all.
   if ("redirect_url" in auth) redirect(auth.redirect_url);
 
   const { data: mapping, error: mappingError } = await supabase

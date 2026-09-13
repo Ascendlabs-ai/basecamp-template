@@ -83,6 +83,25 @@ moment they come up.
       boundary** below before you treat a clean run as proof — there are things it does not
       catch, and you should know what kind of thing they are.
 
+- [ ] **Enable the access-token hook — after `0006`, and nowhere else.** Authentication → Hooks →
+      **Customize Access Token (JWT) Claims** → Postgres → `basecamp` / `custom_access_token_hook`
+      → Enable. `0006` creates the function and grants Supabase Auth the right to run it; that is
+      everything a migration can do, and the dashboard will not offer the function until `0006`
+      has created it. **Skipped, nothing looks wrong.** The catalog, grants and roster are
+      unaffected — no policy reads the hook's claims (proven by test, see Done below). What is
+      missing is the access check on Basecamp SSO token issuance: with the hook off, Supabase
+      issues an OAuth token to any account on the project for any registered client. Enable it
+      even if you have no SSO client yet, so the first one is protected from the moment it is
+      registered. `supabase/README.md` step 1c has the detail and step 4b has the proof.
+
+- [ ] **Prove the environment, not only the migrations.** `supabase/README.md` step 4b: a `curl`
+      that tells `PGRST106` (schema not exposed) from `42501` (exposed, correctly locked); the
+      Hooks page — or the Management API — showing the hook **Enabled**; the hook's own answer on
+      your data from the SQL Editor; and a signed-in person with a type and no grants seeing the
+      empty catalog and, if SSO is configured, failing `/sso/reference` while you succeed.
+      "All migrations succeeded" is not "the environment is configured" — neither dashboard
+      setting leaves a trace in the database for a migration to assert.
+
 - [ ] **Set the Auth URL configuration.** Authentication → URL Configuration: set the Site URL,
       and add **two** paths to the Redirect URLs — `/auth/confirm` and `/accept-invite` — on every
       origin you use, localhost included. They are where an administrator-issued sign-in link lands
@@ -120,14 +139,16 @@ moment they come up.
       Types tab if the labels do not suit you; grants attach to the row rather than the label.
 
 - [ ] **Copy `.env.local.example` to `.env.local` and fill in the values** from Project
-      Settings → API. `NEXT_PUBLIC_SUPABASE_ANON_KEY` is the **anon** key, never the
-      `service_role` key. `SUPABASE_SERVICE_ROLE_KEY` is separate and is what **Add person**,
-      **Issue a sign-in link** and **Suspend** need; without it the app runs but you are back to
-      creating each person by hand in the dashboard. Read the note beside it before setting it.
+      Settings → API, and set `BASECAMP_SITE_URL` to the client-owned custom domain.
+      `NEXT_PUBLIC_SUPABASE_ANON_KEY` is the **anon** key, never the `service_role` key.
+      `SUPABASE_SERVICE_ROLE_KEY` is separate and is what **Add person**, **Issue a sign-in
+      link** and **Suspend** need; a complete launch requires it. Read the note beside it before
+      setting it.
 
 - [ ] **Deploy to Vercel.** Connect this repository and set the same environment variables there.
-      If you set `SUPABASE_SERVICE_ROLE_KEY`, add it as a **server-side** variable — it must never
-      gain a `NEXT_PUBLIC_` prefix.
+      Add `SUPABASE_SERVICE_ROLE_KEY` as a **server-side** variable — it must never gain a
+      `NEXT_PUBLIC_` prefix. Confirm a generated sign-in link uses `BASECAMP_SITE_URL`, not the
+      Vercel deployment hostname.
 
 - [x] **DONE — the `.env.*` deny in `.claude/settings.json` was narrowed.** Raised 2026-08-19,
       closed the same day. The catch-all `Read(./.env.*)` also matched `.env.local.example` and
@@ -201,6 +222,21 @@ Four things were decided rather than merely merged, and each is worth knowing:
   shipped.
 
 ## Known limits
+
+- **`boundary_mutations.sh` is red on the current chain, and has been since `0006` joined it.**
+  Seen 2026-09-13, PostgreSQL 17.10: 9 static cases and 3 runtime cases fail, every one of them
+  for the same reason — `0002`, re-run after `0006`, refuses with *the categories SELECT policy no
+  longer consults `category_or_child_has_grant`*, because `0006` replaced that policy with one
+  built on `can_read_basecamp_category()`. A fresh install is not affected: `0002` runs *before*
+  `0006` and commits. What is affected is the proof — every static case expecting COMMITTED
+  (the control included) now gets REFUSED, so the suite cannot tell a broken mirror from a clean
+  one, and the three nesting-visibility runtime cases fail because `0006` made an entry readable
+  only once it has an active `app_settings` row, which those cases never create. **Next action:**
+  teach `0002` the post-`0006` policy shape (pin `can_read_basecamp_category` /
+  `can_read_basecamp_entry` the way the other nine bodies are pinned, and accept either
+  categories policy by whether `0006` has been applied, as the `list_people` digest already does
+  for `0004`), then give the PART 15 nesting cases an `app_settings` row. PART 16 (the token
+  hook, added 2026-09-13) and PART 17 (`0004` under test) pass in full on the same run.
 
 - **The admin screens read every row in one request, and refuse to render past
   PostgREST's cap.** `/admin/catalog` and `/admin/access` compare the rows they
@@ -292,6 +328,14 @@ reading is "`0002` will not catch a hostile or careless administrator", not "you
       expects are present; a trigger it does not know about, attached to an audited table, is
       invisible to it. Doing that needs more than an API key but less than full ownership. (A
       service-role API key still cannot do it — PostgREST does not issue DDL.)
+- [ ] **Two settings decide whether the install works and whether SSO is protected, and neither
+      is in the database.** Exposing the `basecamp` schema and enabling the access-token hook are
+      both dashboard settings, so no migration can set them and no assertion in `0002` or `0006`
+      can notice they are missing. The first fails loudly (`PGRST106` on every request). The second
+      fails silently: with the hook not enabled, Supabase issues Basecamp SSO tokens with no
+      access check, while the catalog itself behaves perfectly. This is a runbook gap, not a
+      defect a migration can close — `supabase/README.md` puts both at the top and step 4b is the
+      proof. Resolved as far as it can be from inside the repository on 2026-09-13; see Done.
 
 Two smaller ones worth knowing:
 
@@ -376,11 +420,44 @@ Move things here when you've *seen them work*, with the date. Say briefly what c
 checked — that's what makes this section useful six months from now instead of just long.
 
 > **A note on the PART numbers below.** `boundary_mutations.sh` grew a fourth arm and its parts were
-> renumbered when the account-lifecycle and nesting work landed here. The counts in the older
-> entries are what was true on the day, and the part numbers they name have since moved: the
-> Editor-path arm is now PART 13, the runtime arms are PARTS 14-15, and `0004`-as-file-under-test is
-> PART 16. Left as written rather than back-dated — a record of what was checked is worth more than
-> a record that matches today's headings.
+> renumbered when the account-lifecycle and nesting work landed here, and again on 2026-09-13 when
+> the token-hook cases joined the runtime arm. The counts in the older entries are what was true on
+> the day, and the part numbers they name have since moved: the Editor-path arm is now PART 13,
+> the runtime arms are PARTS 14-16, and `0004`-as-file-under-test is PART 17. Left as written
+> rather than back-dated — a record of what was checked is worth more than a record that matches
+> today's headings.
+
+- **The access-token hook: documented, and the fail-open question settled by execution.**
+  `2026-09-13` A read-only briefing on `0004`–`0007` found two dashboard steps no migration can
+  perform — exposing `basecamp` to the Data API (documented as step 0) and enabling
+  `basecamp.custom_access_token_hook` under Authentication → Hooks (documented nowhere) — and
+  asked what the policies do with the claims a never-called hook never adds. Both steps are now
+  at the top of `supabase/README.md` in order, step 1c enables the hook, step 4b is the
+  post-setup proof, `0006` prints a `NOTICE` naming the step when it commits, and the consent
+  page's comment no longer claims token issuance is fail-closed unconditionally.
+
+  **The answer, by test rather than by reading:** *neither.* No row-level policy reads
+  `basecamp_access` or `basecamp_entry_id`; every one decides on `auth.uid()` through
+  `is_super_admin()` and `can_read_basecamp_entry()`. So a token the hook never touched sees
+  exactly what the grant tables say — a member with a type and no grant sees **zero** entries,
+  categories, app settings and OAuth mappings, and a granted member still sees their app — and a
+  token carrying a *forged* `basecamp_access: granted` for the very entry sees zero rows too.
+  The hook's one job is OAuth token issuance for Basecamp SSO: called with a `client_id`, it
+  refuses a no-access member, an inactive app and a disabled mapping with a 403 object, stamps a
+  granted member with both claims, and hands a first-party token (no `client_id`) back untouched
+  — which is why a normal session JWT can never prove the hook is on. **With the hook not enabled,
+  Basecamp SSO is therefore fail-open at the token endpoint** — that half runs inside Supabase
+  Auth and cannot be exercised on a bare cluster, so it is stated from Supabase's documented
+  behaviour (a hook is called only when enabled) and step 4b's check 4 is the live confirmation.
+
+  **Checked, on PostgreSQL 17.10:** PART 16 of `boundary_mutations.sh`, nine new runtime cases,
+  **9/9** — the four RLS answers above, the four hook answers, and `authenticated` being refused
+  EXECUTE on the hook under a real session. `EXPECTED_RLS_CASES` 21 → 30. The same run shows
+  the 12 pre-existing failures recorded under Known limits, none of them in PART 16 or 17.
+  `npm run lint && npx tsc --noEmit && npm test` clean (**221 tests**). The `curl`
+  discriminator's `42501` branch was confirmed against a live project with the schema exposed.
+  **Not checked:** the dashboard toggle itself, and the `PGRST106` branch, which needs a project
+  with the schema not yet exposed.
 
 - **The account-lifecycle path and category nesting, ported in and reconciled.** `2026-08-27`
   Brought `0004`/`0005`, the three `/api/admin/*` routes, the `admin.ts` facade and the screens over

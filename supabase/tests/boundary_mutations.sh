@@ -25,7 +25,7 @@
 #                   a client applies them: pasted, CRLF, whole-file. A green psql
 #                   run said nothing about that route and a client's provision
 #                   died on it. Counted by EXPECTED_EDITOR_CASES.
-#   * Parts 14-15 — RUNTIME. Real sessions as `authenticated`, requiring the
+#   * Parts 14-16 — RUNTIME. Real sessions as `authenticated`, requiring the
 #                   DATABASE to refuse rather than the assertions to notice.
 #                   Counted by EXPECTED_RLS_CASES.
 #   * Part 16     — `0004` as the file under test, the way 1-12 test `0002`.
@@ -65,7 +65,7 @@ export LC_ALL=C
 SOCK="${BC_SOCK:-/tmp/bc17}"
 PORT="${BC_PORT:-55440}"
 TPL="$REPO/supabase/migrations/0002_security_boundary.sql"
-# PART 16 puts this one under test rather than applying it as setup, so it needs
+# PART 17 puts this one under test rather than applying it as setup, so it needs
 # a name of its own. Named here, and used in MIGRATIONS below, so the two cannot
 # come to mean different files.
 M4="$REPO/supabase/migrations/0004_admin_write_paths.sql"
@@ -141,7 +141,7 @@ crlf_of () { printf '%s/%s.crlf.sql' "$EDIR" "$(basename "$1" .sql)"; }
 #
 # `how-many` is a COUNT, and it is always passed explicitly so that a truncated
 # chain is a visible argument at the call site rather than an invisible omission.
-# Only PART 16 passes anything but the full length: it puts 0004 itself under
+# Only PART 17 passes anything but the full length: it puts 0004 itself under
 # test, so it must stop at 0002 and apply 0004 as the thing being measured.
 #
 # The `editor` transport reads the CRLF fixtures built in the preflight and
@@ -877,7 +877,7 @@ rls_pass=0; rls_fail=0; rls_ran=0
 
 # How many assertions PART 14 runs. Same discipline as EXPECTED_CASES, and
 # asserted the same way: a lost case is silent, and silence here reads as proof.
-EXPECTED_RLS_CASES=21
+EXPECTED_RLS_CASES=30
 
 ADMIN_UID=11111111-1111-1111-1111-111111111111
 OTHER_UID=22222222-2222-2222-2222-222222222222
@@ -1375,9 +1375,250 @@ begin
   if n <> 1 then raise exception 'an administrator could not delete an empty category'; end if;
 end \$\$;"
 
+# ---------------------------------------------------------------------------
+# PART 16: THE TOKEN HOOK, AND WHAT ITS ABSENCE DOES
+#
+# 0006 creates `basecamp.custom_access_token_hook` and grants it to
+# `supabase_auth_admin`, but Supabase only CALLS it once somebody enables it in
+# Dashboard → Authentication → Hooks. No migration can do that. So every stamp
+# spends some time — possibly forever — with the hook created and inert, and
+# the question this part answers by execution rather than by reading is: what
+# does the database do with a token the hook never touched?
+#
+# The answer, proven below: the row-level policies never read the hook's claims
+# at all. Every policy decides on `auth.uid()` through `is_super_admin()` and
+# `can_read_basecamp_entry()`, so a token WITHOUT `basecamp_access` sees exactly
+# what the grant tables say, and a token carrying a FORGED `basecamp_access`
+# sees no more. Neither fail-open nor fail-closed — the claim is not consulted.
+#
+# Where the hook DOES decide something is OAuth token issuance for Basecamp SSO:
+# it is what refuses a token to a person without access to the app behind a
+# `client_id`. That half runs inside Supabase Auth and cannot be exercised on a
+# bare cluster, so these cases call the function directly as
+# `supabase_auth_admin`, the role Auth uses, with the event shape Auth sends.
+# What they prove is the function's answer. That Auth ASKS is a dashboard
+# setting — see supabase/README.md, "Enable the access-token hook".
+#
+# THE UUIDS ARE REAL v4s ON PURPOSE. The hook validates `user_id` and
+# `client_id` against the RFC variant bits before it looks anything up, and the
+# suite's `1111…` constants fail that check — a first draft of these cases got a
+# 403 for every user, including the granted one, for a reason that had nothing
+# to do with access. A refusal that fires before the lookup proves nothing about
+# the lookup, so these carry their own constants.
+# ---------------------------------------------------------------------------
 
 echo
-echo "=== PARTS 14+15 TOTAL: $rls_pass passed, $rls_fail failed (of $EXPECTED_RLS_CASES expected) ==="
+echo "=== PART 16: THE TOKEN HOOK — RLS without its claims, and the hook's own answer ==="
+
+HK_ADMIN=a1111111-1111-4111-8111-111111111111
+HK_NOBODY=a2222222-2222-4222-8222-222222222222
+HK_GRANTED=a4444444-4444-4444-8444-444444444444
+HK_ENTRY=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+HK_CLIENT=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+
+# The fixture every case below builds as postgres before switching role, inside
+# the transaction run_rls_assert rolls back: one active app in SELECTED mode
+# with a registered OAuth client, one administrator, one member GRANTED the app,
+# and one member with a type and no grant at all — the person the whole access
+# model exists to keep out. `app_settings` is inserted explicitly because 0006
+# backfills it only for entries that already existed when it ran.
+HK_FIXTURE="
+  insert into auth.users (id, email) values
+    ('$HK_ADMIN', 'hook-admin@test'), ('$HK_NOBODY', 'hook-nobody@test'), ('$HK_GRANTED', 'hook-granted@test');
+  insert into basecamp.super_admins (user_id) values ('$HK_ADMIN');
+  insert into basecamp.categories (slug, name, description) values ('hook-cat', 'Hook', 'x');
+  insert into basecamp.entries
+    (id, category_id, display_name, description, entry_type, status, host,
+     auth_boundary, trigger_type, owner, slug)
+    select '$HK_ENTRY', id, 'Hooked app', 'x', 'reference_only', 'active', 'unknown',
+           'unknown', 'user', 'someone', 'hooked-app'
+      from basecamp.categories where slug = 'hook-cat';
+  insert into basecamp.app_settings (entry_id, access_mode, auth_mode, is_active)
+    values ('$HK_ENTRY', 'selected', 'basecamp_sso', true)
+    on conflict (entry_id) do update
+      set access_mode = excluded.access_mode, auth_mode = excluded.auth_mode, is_active = excluded.is_active;
+  insert into basecamp.oauth_clients (entry_id, client_id, redirect_uris)
+    values ('$HK_ENTRY', '$HK_CLIENT', array['https://client.example/callback']);
+  insert into basecamp.members (user_id, member_type_id)
+    select u, id from basecamp.member_types, unnest(array['$HK_GRANTED'::uuid, '$HK_NOBODY'::uuid]) as u
+     where slug = 'staff';
+  insert into basecamp.access_grants (user_id, entry_id) values ('$HK_GRANTED', '$HK_ENTRY');
+"
+
+# THE FAIL-OPEN QUESTION, ANSWERED. A member with a type and no grant, holding
+# a token with none of the hook's claims — exactly what every session looks like
+# while the hook is off — must see nothing.
+run_rls_assert "hook OFF: a member with no grant sees ZERO entries — RLS never reads the hook's claims" "
+$HK_FIXTURE
+do \$\$
+declare n integer;
+begin
+  set local role authenticated;
+  perform set_config('request.jwt.claims', '{\"sub\":\"$HK_NOBODY\",\"role\":\"authenticated\"}', true);
+  select count(*) into n from basecamp.entries;
+  if n <> 0 then
+    raise exception 'FAIL-OPEN: a member with no grant read % entry row(s) on a token the hook never touched', n;
+  end if;
+  select count(*) into n from basecamp.oauth_clients;
+  if n <> 0 then
+    raise exception 'a member with no grant read % OAuth client mapping(s)', n;
+  end if;
+end \$\$;"
+
+# THE FAIL-CLOSED QUESTION, ANSWERED. The same claim-less token for a person
+# who IS granted must still see their app: the catalog does not depend on the
+# hook, so an inert hook does not lock the app. Positive control for the case
+# above — a schema that returned nothing to anyone would pass it.
+run_rls_assert "hook OFF: a GRANTED member still sees their app — the catalog does not depend on the hook" "
+$HK_FIXTURE
+do \$\$
+declare n integer;
+begin
+  set local role authenticated;
+  perform set_config('request.jwt.claims', '{\"sub\":\"$HK_GRANTED\",\"role\":\"authenticated\"}', true);
+  select count(*) into n from basecamp.entries where id = '$HK_ENTRY';
+  if n <> 1 then
+    raise exception 'FAIL-CLOSED: a granted member could not read their app without the hook (got % rows)', n;
+  end if;
+end \$\$;"
+
+# THE FORGERY. If a policy ever starts trusting the claim, this is the token
+# that gets through: the same no-grant member presenting `basecamp_access:
+# granted` for the very entry. Claims are minted by Auth, so a real client
+# cannot forge one — but a policy that read the claim would be one hook
+# misconfiguration away from trusting whatever arrived.
+run_rls_assert "a FORGED basecamp_access claim grants nothing — no policy trusts the claim" "
+$HK_FIXTURE
+do \$\$
+declare n integer;
+begin
+  set local role authenticated;
+  perform set_config('request.jwt.claims',
+    '{\"sub\":\"$HK_NOBODY\",\"role\":\"authenticated\",\"basecamp_access\":\"granted\",\"basecamp_entry_id\":\"$HK_ENTRY\"}', true);
+  select count(*) into n from basecamp.entries;
+  if n <> 0 then
+    raise exception 'a forged basecamp_access claim read % entry row(s) — a policy is trusting the JWT', n;
+  end if;
+  if basecamp.can_read_basecamp_entry('$HK_ENTRY') then
+    raise exception 'can_read_basecamp_entry() said true on a forged claim';
+  end if;
+end \$\$;"
+
+# The hook's own answers, as Supabase Auth would receive them. First-party
+# sign-in carries no client_id, and the hook must hand the claims back
+# untouched — so a normal Basecamp session looks IDENTICAL with the hook on or
+# off, which is why no session JWT can prove the hook is enabled.
+run_rls_assert "the hook leaves a first-party token untouched — no client_id, claims returned as-is" "
+$HK_FIXTURE
+do \$\$
+declare ev jsonb; got jsonb;
+begin
+  set local role supabase_auth_admin;
+  ev := jsonb_build_object('user_id', '$HK_NOBODY',
+          'claims', jsonb_build_object('sub', '$HK_NOBODY', 'role', 'authenticated'));
+  got := basecamp.custom_access_token_hook(ev);
+  if got->'claims' is distinct from ev->'claims' or got ? 'error' then
+    raise exception 'the hook altered a first-party token: %', got;
+  end if;
+end \$\$;"
+
+# THE SECURITY PROPERTY THE HOOK CARRIES. A member without access to the app
+# behind this client_id must get an error object, not claims — this is the
+# refusal Supabase Auth turns into a failed token request.
+run_rls_assert "the hook REFUSES a token for a member without access to the app" "
+$HK_FIXTURE
+do \$\$
+declare got jsonb;
+begin
+  set local role supabase_auth_admin;
+  got := basecamp.custom_access_token_hook(jsonb_build_object('user_id', '$HK_NOBODY',
+           'claims', jsonb_build_object('sub', '$HK_NOBODY', 'client_id', '$HK_CLIENT')));
+  if got ? 'claims' then
+    raise exception 'the hook stamped a token for a member with no access: %', got;
+  end if;
+  if (got->'error'->>'http_code') <> '403' or (got->'error'->>'message') not like '%do not have access%' then
+    raise exception 'refused, but not by the access lookup (%) — this case proved nothing about access', got;
+  end if;
+end \$\$;"
+
+# Positive control for the refusal above: the granted member gets stamped, with
+# both claims, and with the right entry. A hook that refused everyone would pass
+# every refusal case and break SSO for every client.
+run_rls_assert "the hook STAMPS a granted member's token — basecamp_access granted, entry id set" "
+$HK_FIXTURE
+do \$\$
+declare got jsonb;
+begin
+  set local role supabase_auth_admin;
+  got := basecamp.custom_access_token_hook(jsonb_build_object('user_id', '$HK_GRANTED',
+           'claims', jsonb_build_object('sub', '$HK_GRANTED', 'client_id', '$HK_CLIENT')));
+  if got ? 'error' then
+    raise exception 'the hook refused a granted member: %', got;
+  end if;
+  if (got->'claims'->>'basecamp_access') is distinct from 'granted'
+     or (got->'claims'->>'basecamp_entry_id') is distinct from '$HK_ENTRY' then
+    raise exception 'the hook stamped the wrong claims: %', got->'claims';
+  end if;
+end \$\$;"
+
+# Disabling an app denies token issuance to EVERYONE, administrators included —
+# the README says so, so it is asserted. Admins keep catalog access to repair
+# it; they do not keep a token to the disabled app.
+run_rls_assert "the hook refuses even an ADMINISTRATOR when the app is inactive" "
+$HK_FIXTURE
+update basecamp.app_settings set is_active = false where entry_id = '$HK_ENTRY';
+do \$\$
+declare got jsonb;
+begin
+  set local role supabase_auth_admin;
+  got := basecamp.custom_access_token_hook(jsonb_build_object('user_id', '$HK_ADMIN',
+           'claims', jsonb_build_object('sub', '$HK_ADMIN', 'client_id', '$HK_CLIENT')));
+  if got ? 'claims' then
+    raise exception 'an inactive app issued a token to an administrator: %', got;
+  end if;
+end \$\$;"
+
+# A mapping switched off in Admin → Catalog must stop issuance on its own,
+# without the app itself being deactivated.
+run_rls_assert "the hook refuses a DISABLED client mapping" "
+$HK_FIXTURE
+update basecamp.oauth_clients set enabled = false where client_id = '$HK_CLIENT';
+do \$\$
+declare got jsonb;
+begin
+  set local role supabase_auth_admin;
+  got := basecamp.custom_access_token_hook(jsonb_build_object('user_id', '$HK_GRANTED',
+           'claims', jsonb_build_object('sub', '$HK_GRANTED', 'client_id', '$HK_CLIENT')));
+  if got ? 'claims' then
+    raise exception 'a disabled client mapping issued a token: %', got;
+  end if;
+end \$\$;"
+
+# The hook must not be reachable as an RPC. Were `authenticated` to hold EXECUTE,
+# PostgREST would expose it at /rest/v1/rpc/custom_access_token_hook and a
+# signed-in person could ask it to evaluate any user against any client. 0006
+# asserts the privilege at install; this asks the database under a real session.
+run_rls_assert "a signed-in person cannot call the hook themselves" "
+$HK_FIXTURE
+do \$\$
+declare msg text;
+begin
+  begin
+    set local role authenticated;
+    perform set_config('request.jwt.claims', '{\"sub\":\"$HK_NOBODY\",\"role\":\"authenticated\"}', true);
+    perform basecamp.custom_access_token_hook('{}'::jsonb);
+    raise exception 'authenticated executed the token hook directly';
+  exception when insufficient_privilege then
+    get stacked diagnostics msg = message_text;
+    if msg not like '%permission denied for function%' then
+      raise exception 'refused for an unexpected reason (%)', msg;
+    end if;
+  end;
+end \$\$;"
+
+
+echo
+echo "=== PARTS 14-16 TOTAL: $rls_pass passed, $rls_fail failed (of $EXPECTED_RLS_CASES expected) ==="
 # NO `exit` here. An earlier draft exited on a count drift at this point, which
 # suppressed the main suite's own summary and the EXPECTED_CASES and
 # whitelist assertions below — the exact "silence reads as proof" failure this
@@ -1387,7 +1628,7 @@ $BASE -c "drop database if exists $RLSDB;" >/dev/null 2>&1
 
 
 # ---------------------------------------------------------------------------
-# PART 16: 0004's OWN POST-CONDITIONS, AS THE FILE UNDER TEST
+# PART 17: 0004's OWN POST-CONDITIONS, AS THE FILE UNDER TEST
 #
 # Every case in PARTS 1-11 re-runs 0002. That leaves 0004's post-conditions
 # completely uncovered, and a review found the consequence: roughly half of them
@@ -1438,7 +1679,7 @@ run_0004_case () {
 }
 
 echo
-echo "=== PART 16: 0004 AS THE FILE UNDER TEST ==="
+echo "=== PART 17: 0004 AS THE FILE UNDER TEST ==="
 run_0004_case "clean schema — 0004 must apply" COMMITTED ""
 # D9: the guard that makes an opened DELETE survivable.
 run_0004_case "last-admin guard disabled before 0004 opens DELETE" REFUSED "alter table basecamp.super_admins disable trigger basecamp_super_admins_keep_last;"
@@ -1471,7 +1712,7 @@ run_0004_case "the seed prevented from marking any type is_system" REFUSED "alte
 run_0004_case "the is_system delete guard disabled" REFUSED "alter table basecamp.member_types disable trigger basecamp_member_types_no_system_delete;"
 
 echo
-echo "=== PART 16 TOTAL: $m4_pass passed, $m4_fail failed (of $EXPECTED_M4_CASES expected) ==="
+echo "=== PART 17 TOTAL: $m4_pass passed, $m4_fail failed (of $EXPECTED_M4_CASES expected) ==="
 
 
 echo
