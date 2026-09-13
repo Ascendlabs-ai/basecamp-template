@@ -7,6 +7,7 @@ import type {
   Grant,
   GrantCategory,
   Member,
+  Person,
   ToggleTarget,
   TypeGrant,
 } from "@/types/admin";
@@ -121,6 +122,22 @@ export function banKey(userId: string): string {
 
 /** A constant, for the same reason CREATE_TYPE_KEY is: one at a time. */
 export const ADD_PERSON_KEY = "add-person";
+
+/**
+ * Can this account receive an app-issued credential?
+ *
+ * `list_people()` intentionally shows the shared Supabase project's complete
+ * auth roster. Visibility there does not make someone a member of this app.
+ * The server accepts a link request only after a deliberate member-type or
+ * administrator assignment, so the UI must expose the same boundary before a
+ * click rather than translating it into a surprising 404 afterwards.
+ */
+export function canIssueSignInLink(
+  person: Pick<Person, "id" | "is_super_admin">,
+  members: Map<string, Member>,
+): boolean {
+  return person.is_super_admin || members.has(person.id);
+}
 
 /**
  * Is this person's sign-in currently suspended?

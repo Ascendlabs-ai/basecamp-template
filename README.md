@@ -89,8 +89,9 @@ Full provisioning instructions, including the first-administrator step, are in
    availability, access-mode, OAuth client-mapping, and configuration-audit
    contract. `0007` adds administrator-managed display name and logo settings.
 4. Create your administrator account, then insert their trust-root row.
-5. `cp .env.local.example .env.local` and fill in the values — two required, plus
-   `SUPABASE_SERVICE_ROLE_KEY` if you want to add people from the app.
+5. `cp .env.local.example .env.local` and fill in all four launch values,
+   including the client-owned `BASECAMP_SITE_URL` and server-only
+   `SUPABASE_SERVICE_ROLE_KEY`.
 6. Add `/auth/confirm` and `/accept-invite` to the project's Redirect URLs.
 7. `npm install && npm run dev`, sign in, confirm `/admin/access` renders.
 8. Set the client identity in **Admin → Branding**, build the catalog in
@@ -180,9 +181,10 @@ error).
 ## Stack
 
 Next.js App Router (React Compiler enabled), React 19, TypeScript, MUI 7 with
-Emotion, Framer Motion, and Supabase Auth + Postgres. Deploys to Vercel with two
-environment variables, plus `SUPABASE_SERVICE_ROLE_KEY` if you want to add
-people from the app, and no other configuration.
+Emotion, Framer Motion, and Supabase Auth + Postgres. A complete Vercel launch
+uses the four environment variables in `.env.local.example`: the public app
+origin, two Supabase client values, and the server-only service-role key for
+account administration.
 
 ## Building the catalog
 

@@ -150,7 +150,7 @@ are irreversible or cost real money, which is the whole reason they are on the l
 | Frontend | Next.js 16 App Router, React 19, TypeScript, MUI 7 with Emotion, Framer Motion |
 | Backend | The database answers the app directly. Three `/api/admin/*` routes exist solely to call Supabase Auth — see the exception above |
 | Database | Supabase Postgres, everything in the `basecamp` schema, all of it behind row-level security |
-| Hosting | Vercel — two environment variables, plus `SUPABASE_SERVICE_ROLE_KEY` if you add people from the app |
+| Hosting | Vercel — `BASECAMP_SITE_URL`, two Supabase client values, and the server-only `SUPABASE_SERVICE_ROLE_KEY` for account administration |
 | Code lives in | This repository, the copy you stamped from the template |
 
 Sign-in: Supabase Auth, email and password. Accounts are created from `/admin/access` → **Add
@@ -212,11 +212,12 @@ catalog, not an error.
 ## Settings this project needs
 
 **Never write a value into this table** — it is committed. The values live in `.env.local`, which
-is not, and `.env.local.example` shows the shape. Both of the names below are non-sensitive, so
+is not, and `.env.local.example` shows the shape. All three names below are non-sensitive, so
 Claude fills them in there itself; see the `.env.local` rule above for where that stops.
 
 | Name | What it's for |
 |---|---|
+| `BASECAMP_SITE_URL` | The client-owned public origin used in generated sign-in links. Use the custom domain, not a Vercel deployment hostname |
 | `NEXT_PUBLIC_SUPABASE_URL` | Your Supabase project's address. Supabase Dashboard → Project Settings → API |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | The anon / publishable key from the same screen. **Never the service_role key** — see above |
 

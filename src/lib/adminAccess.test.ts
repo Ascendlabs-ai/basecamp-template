@@ -8,6 +8,7 @@ import {
   CREATE_TYPE_KEY,
   adminRoleKey,
   banKey,
+  canIssueSignInLink,
   categoryLabel,
   deleteTypeKey,
   describeError,
@@ -43,6 +44,16 @@ const ENTRY = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const OTHER_ENTRY = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const USER = "99999999-9999-9999-9999-999999999999";
 const OTHER_USER = "88888888-8888-8888-8888-888888888888";
+
+test("a sign-in link requires this app's membership or administrator role", () => {
+  const ordinary = { id: USER, is_super_admin: false };
+  assert.equal(canIssueSignInLink(ordinary, indexMembers([])), false);
+  assert.equal(canIssueSignInLink(ordinary, indexMembers([member(USER, "staff")])), true);
+  assert.equal(
+    canIssueSignInLink({ id: USER, is_super_admin: true }, indexMembers([])),
+    true,
+  );
+});
 
 const entryGrant = (user: string, entry: string): Grant => ({
   id: `g-${user}-${entry}`,

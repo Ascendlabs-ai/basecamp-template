@@ -234,6 +234,20 @@ test("the baseline contains no psql meta-commands", () => {
   );
 });
 
+test("source migrations contain no standalone patch-artifact lines", () => {
+  const migrationDir = path.join(ROOT, "supabase", "migrations");
+  const affected = readdirSync(migrationDir)
+    .filter((file) => file.endsWith(".sql"))
+    .filter((file) => /^\+\s*$/m.test(readFileSync(path.join(migrationDir, file), "utf8")));
+
+  assert.deepEqual(
+    affected,
+    [],
+    "A source migration contains a standalone `+` copied from a patch. PostgreSQL stops at " +
+      "that line, so every later feature is absent even though the file looks complete.",
+  );
+});
+
 /**
  * `SET transaction_timeout` is PostgreSQL 17+. Supabase projects are not all on
  * 17, and an unrecognized SET aborts the entire script before any object is
@@ -821,6 +835,36 @@ test("the 0004-target suite's declared case count matches the cases it runs", ()
     invocations,
     Number(declared[1]),
     `EXPECTED_M4_CASES says ${declared[1]} but the file makes ${invocations} run_0004_case calls.`,
+  );
+});
+
+test("0002 and 0004 pin the normalized body of the audit function they actually ship", () => {
+  const migration = readFileSync(
+    path.join(ROOT, "supabase", "migrations", "0004_admin_write_paths.sql"),
+    "utf8",
+  );
+  const boundary = readFileSync(
+    path.join(ROOT, "supabase", "migrations", "0002_security_boundary.sql"),
+    "utf8",
+  );
+  const body = /create or replace function basecamp\.log_privileged_action\([^)]*\)[\s\S]*?\nas (\$\w*\$)([\s\S]*?)\1;/m.exec(
+    migration,
+  );
+  assert.ok(body, "0004 no longer contains the log_privileged_action body to hash.");
+
+  const normalizedBody = body![2].replace(/\r\n?/g, "\n");
+  const actual = createHash("md5").update(normalizedBody).digest("hex");
+  assert.match(
+    migration,
+    new RegExp(`p\\.proname = 'log_privileged_action'[\\s\\S]{0,1000}?'${actual}'`),
+    `0004 ships log_privileged_action digest ${actual}, but its post-condition pins another ` +
+      "body. A clean client install would create the function and then roll itself back.",
+  );
+  assert.match(
+    boundary,
+    new RegExp(`p\\.proname = 'log_privileged_action'[\\s\\S]{0,1000}?'${actual}'`),
+    `0002 pins a log_privileged_action digest other than the body 0004 ships (${actual}). ` +
+      "Revalidating the boundary after installation would refuse a clean database.",
   );
 });
 

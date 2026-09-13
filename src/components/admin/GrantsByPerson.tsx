@@ -16,6 +16,7 @@ import Typography from "@mui/material/Typography";
 
 import {
   effectiveEntryCount,
+  canIssueSignInLink,
   grantKey,
   memberKey,
   pendingKey,
@@ -76,6 +77,7 @@ export default function GrantsByPerson({
 }) {
   const member = memberIndex.get(person.id);
   const memberPending = pending.has(memberKey(person.id));
+  const canIssueLink = canIssueSignInLink(person, memberIndex);
 
   // Draft state for the type/department form. Re-seeded when the selected
   // person changes or their saved row changes — a render-phase update keyed on
@@ -140,16 +142,26 @@ export default function GrantsByPerson({
               other end of the link. Suspending an account lives in the roster's
               ⋮ menu rather than here, so the destructive control is not beside
               the routine one. */}
-          <Button
-            variant="outlined"
-            size="small"
-            disabled={linkPending}
-            onClick={() => onIssueSignInLink(person)}
-            startIcon={linkPending ? <CircularProgress size={14} color="inherit" /> : null}
-            sx={{ flexShrink: 0, cursor: "pointer" }}
-          >
-            {linkPending ? "Issuing…" : "Issue sign-in link"}
-          </Button>
+          <Box sx={{ flexShrink: 0 }}>
+            <Button
+              variant="outlined"
+              size="small"
+              disabled={!canIssueLink || linkPending}
+              onClick={() => onIssueSignInLink(person)}
+              startIcon={linkPending ? <CircularProgress size={14} color="inherit" /> : null}
+              sx={{ width: "100%", cursor: canIssueLink && !linkPending ? "pointer" : "default" }}
+            >
+              {linkPending ? "Issuing…" : "Issue sign-in link"}
+            </Button>
+            {!canIssueLink ? (
+              <Typography
+                variant="caption"
+                sx={{ display: "block", color: "text.secondary", mt: 0.5, maxWidth: 220 }}
+              >
+                Assign a type or make them an administrator first.
+              </Typography>
+            ) : null}
+          </Box>
         </Stack>
 
         {person.is_super_admin ? (

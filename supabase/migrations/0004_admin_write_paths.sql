@@ -522,7 +522,7 @@ begin
     select 1 from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
      where ns.nspname = 'basecamp' and p.proname = 'log_privileged_action'
        and md5(replace(replace(p.prosrc, chr(13) || chr(10), chr(10)),
-                       chr(13), chr(10))) = 'f7a47fdfe66f5e57f8cad187b6564bdc'
+                       chr(13), chr(10))) = '88671310b615b7e0414ce58f7c36e23c'
   ) then
     raise exception 'log_privileged_action''s body differs from the one this migration ships — READ the new body before re-deriving its digest';
   end if;

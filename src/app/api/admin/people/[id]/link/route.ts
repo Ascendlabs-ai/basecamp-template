@@ -8,6 +8,7 @@ import {
   requireSuperAdmin,
 } from "@/lib/supabase/admin";
 import { buildSignInUrl } from "@/lib/adminLink";
+import { basecampLinkOrigin } from "@/lib/siteUrl";
 
 /**
  * POST /api/admin/people/[id]/link — re-issue a sign-in link.
@@ -43,6 +44,20 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const notMember = await requireMemberOfThisApp(caller, id);
   if (notMember) return denied(notMember);
 
+  // Resolve the destination BEFORE logging or minting. A malformed deployment
+  // setting must not invalidate the person's previous one-time link and then
+  // fail to return its replacement.
+  let linkOrigin: string;
+  try {
+    linkOrigin = basecampLinkOrigin(request.url);
+  } catch (error) {
+    console.error("[basecamp] invalid BASECAMP_SITE_URL:", error);
+    return NextResponse.json(
+      { error: "The public app URL is not configured correctly." },
+      { status: 500 },
+    );
+  }
+
   // LOG FIRST, THEN MINT. Minting a recovery token overwrites the one the
   // person may already be holding, so it is a state change to their account —
   // and an earlier version did it before writing the audit row. On any log
@@ -61,7 +76,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   // Link in the body only. Never logged, never audited.
   return NextResponse.json({
-    link: buildSignInUrl(new URL(request.url).origin, issued.token, "recovery"),
+    link: buildSignInUrl(linkOrigin, issued.token, "recovery"),
     email: issued.email,
   });
 }

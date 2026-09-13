@@ -9,6 +9,7 @@ import {
   type Authorized,
 } from "@/lib/supabase/admin";
 import { buildSignInUrl, isEmailShaped, normaliseEmail } from "@/lib/adminLink";
+import { basecampLinkOrigin } from "@/lib/siteUrl";
 
 /**
  * POST /api/admin/people — add someone to this app.
@@ -142,6 +143,20 @@ export async function POST(request: Request) {
     }
   }
 
+  // Resolve the destination BEFORE creating an account or minting a token. A
+  // malformed deployment setting must fail without leaving behind a new user
+  // or invalidating an existing one-time link.
+  let linkOrigin: string;
+  try {
+    linkOrigin = basecampLinkOrigin(request.url);
+  } catch (error) {
+    console.error("[basecamp] invalid BASECAMP_SITE_URL:", error);
+    return NextResponse.json(
+      { error: "The public app URL is not configured correctly." },
+      { status: 500 },
+    );
+  }
+
   // `Boolean(existing)` is the evidence, and it comes from the roster read
   // above rather than from GoTrue's error shape. See the parameter's own note.
   const account = await admin.createOrRecoverAccount(email, Boolean(existing));
@@ -221,7 +236,7 @@ export async function POST(request: Request) {
   // argument names the TOKEN KIND GoTrue actually minted, which is what
   // `verifyOtp` must be given back. The response field is `wasCreated`, because
   // that one drives what the administrator is told.
-  const link = buildSignInUrl(new URL(request.url).origin, token, created ? "invite" : "recovery");
+  const link = buildSignInUrl(linkOrigin, token, created ? "invite" : "recovery");
   return NextResponse.json(
     { link, email, user_id: userId, created: wasCreated },
     { status: 201 },

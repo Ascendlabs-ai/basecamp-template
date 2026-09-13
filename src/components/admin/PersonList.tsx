@@ -14,7 +14,13 @@ import Paper from "@mui/material/Paper";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
-import { adminRoleKey, banKey, isBanned, signInLinkKey } from "@/lib/adminAccess";
+import {
+  adminRoleKey,
+  banKey,
+  canIssueSignInLink,
+  isBanned,
+  signInLinkKey,
+} from "@/lib/adminAccess";
 import type { Member, MemberType, Person } from "@/types/admin";
 
 import PersonAvatar from "./PersonAvatar";
@@ -82,6 +88,7 @@ export default function PersonList({
   const target = menuFor;
   const targetIsSelf = target?.id === currentUserId;
   const targetBanned = target ? isBanned(target) : false;
+  const targetCanReceiveLink = target ? canIssueSignInLink(target, members) : false;
 
   /** Run a row action and close the menu — every item does both. */
   function act(run: () => void) {
@@ -362,12 +369,18 @@ export default function PersonList({
           ? [
               <MenuItem
                 key="link"
-                disabled={pending.has(signInLinkKey(target.id))}
+                disabled={
+                  !targetCanReceiveLink || pending.has(signInLinkKey(target.id))
+                }
                 onClick={() => act(() => onReissueLink(target))}
               >
                 <ListItemText
                   primary="Issue a sign-in link"
-                  secondary="For someone locked out. Nothing is emailed."
+                  secondary={
+                    targetCanReceiveLink
+                      ? "For someone locked out. Nothing is emailed."
+                      : "Assign a type or make them an administrator first."
+                  }
                 />
               </MenuItem>,
 
