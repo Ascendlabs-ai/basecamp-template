@@ -19,7 +19,7 @@
 # boundary". Read that before treating a green run as a clean bill of health.
 #
 # FOUR ARMS, AND THEY ANSWER DIFFERENT QUESTIONS. Do not collapse them.
-#   * Parts 1-12b — STATIC, psql transport. Break one thing in a mirror, require
+#   * Parts 1-12c — STATIC, psql transport. Break one thing in a mirror, require
 #                   `0002` to refuse. Counted by EXPECTED_CASES.
 #   * Part 13     — STATIC, EDITOR transport. The same migrations applied the way
 #                   a client applies them: pasted, CRLF, whole-file. A green psql
@@ -88,6 +88,12 @@ M4="$REPO/supabase/migrations/0004_admin_write_paths.sql"
 # mirror. 0004's member-type rows are a different matter and 0004 IS here — they
 # are structural, and 0004 asserts them.
 #
+# 0007 IS here since 2026-09-14. It used to be left out on purpose, because its
+# public branding projection is a SECURITY DEFINER outside basecamp and 0002
+# refused every re-run after it. 0002 now admits that ONE function by name,
+# owner, pinned search_path and body digest — so the mirror carries the whole
+# documented chain, and PART 12c proves the admission cannot be widened.
+#
 # ORDER IS THE APPLY ORDER. Do not sort it.
 MIGRATIONS=(
   "$REPO/supabase/migrations/0001_baseline.sql"
@@ -95,11 +101,12 @@ MIGRATIONS=(
   "$M4"
   "$REPO/supabase/migrations/0005_category_nesting.sql"
   "$REPO/supabase/migrations/0006_product_contract.sql"
+  "$REPO/supabase/migrations/0007_branding_settings.sql"
 )
 # Labels for the per-step failure messages, index-aligned with MIGRATIONS. Kept
 # beside it rather than derived from the filenames: "0002 first" says something
 # basename() cannot, and the message exists to answer WHICH STEP FAILED.
-MIGRATION_LABELS=("0001" "0002 first" "0004" "0005" "0006")
+MIGRATION_LABELS=("0001" "0002 first" "0004" "0005" "0006" "0007")
 
 # ONE CHECKED SETUP STEP, shared by every arm.
 #
@@ -190,7 +197,7 @@ EXPECTED_WHITELIST_HITS=6
 # silent-reversion failure the whole boundary is defended against, applied to
 # the artifact that is its only proof. Change this number in the same commit as
 # a case, never to make a run go quiet.
-EXPECTED_CASES=122
+EXPECTED_CASES=131
 
 # Cases `0002` is expected to COMMIT rather than refuse, because it ASSIGNS as
 # well as asserts: sections 1-2 pin ownership and fix EXECUTE grants, so
@@ -658,11 +665,6 @@ echo "=== PART 12b: THE PRODUCT CONTRACT — 0006's gates under 0002, proven to 
 # and silently reads past the app-settings contract.
 run_case "categories policy reverted to the 0005 predicate after 0006" REFUSED "drop policy basecamp_categories_select_granted on basecamp.categories; create policy basecamp_categories_select_granted on basecamp.categories for select to authenticated using ((select basecamp.is_super_admin()) or basecamp.category_or_child_has_grant(id));"
 run_case "entries policy reverted to the 0001 predicate after 0006"    REFUSED "drop policy basecamp_entries_select_granted on basecamp.entries; create policy basecamp_entries_select_granted on basecamp.entries for select to authenticated using ((select basecamp.is_super_admin()) or basecamp.can_read_entry(id, category_id));"
-# THE SLACK. Nine policies arrived with 0006 and the count floor of 26 absorbed
-# any one of them — PART 1's "an RLS policy was dropped" COMMITTED once 0006
-# joined the chain. Both sets are named and table-qualified now; this drops one
-# of 0006's own, which only the guarded set can notice.
-run_case "a 0006 policy dropped after 0006"                           REFUSED "drop policy basecamp_app_settings_select_scoped on basecamp.app_settings;"
 # THE GUTTED GATES. Same defeat D21 records for the 0005 gate: prosecdef kept,
 # the policy's mention kept, section 1's hardening satisfied, whole catalog
 # disclosed. The hook variant issues an SSO token to everyone while passing
@@ -676,6 +678,29 @@ run_case "the token hook gutted to return claims unchanged"           REFUSED "c
 run_case "a table granted to Auth's role"                             REFUSED "grant select on basecamp.entries to supabase_auth_admin;"
 run_case "EXECUTE on a second function granted to Auth's role"        REFUSED "grant execute on function basecamp.is_super_admin() to supabase_auth_admin;"
 run_case "CREATE on the schema granted to Auth's role"                REFUSED "grant create on schema basecamp to supabase_auth_admin;"
+# THE SLACK. Nine policies arrived with 0006 and the count floor of 26 absorbed
+# any one of them — PART 1's "an RLS policy was dropped" COMMITTED once 0006
+# joined the chain. Both sets are named and table-qualified now; this drops one
+# of 0006's own, which only the guarded set can notice.
+run_case "a 0006 policy dropped after 0006"                           REFUSED "drop policy basecamp_app_settings_select_scoped on basecamp.app_settings;"
+run_case "the configuration audit writer detached after 0006"         REFUSED "drop trigger basecamp_app_settings_audit on basecamp.app_settings;"
+
+echo
+echo "=== PART 12c: THE ONE ADMITTED OUTSIDER — 0007's projection, fenced ==="
+# 0007 creates public.basecamp_public_branding(), a SECURITY DEFINER outside
+# basecamp that reads the display name and logo path for the signed-out
+# screens. That is the exact shape PARTS 9-11 exist to refuse, and 0002 did
+# refuse it — every re-run after 0007 — until it learned to admit that ONE
+# function by name, owner, pinned search_path and body digest. An admission is
+# a hole unless its edges are proven, so each edge gets a case.
+run_case "the projection widened to read entries"                     REFUSED "create or replace function public.basecamp_public_branding() returns table(display_name text, logo_path text) language sql stable security definer set search_path to '' as \$x\$ select e.display_name, e.slug from basecamp.entries e \$x\$;"
+run_case "the projection's search_path unpinned"                      REFUSED "alter function public.basecamp_public_branding() reset search_path;"
+run_case "PUBLIC granted EXECUTE on the projection"                   REFUSED "grant execute on function public.basecamp_public_branding() to public;"
+run_case "service_role granted EXECUTE on the projection"             REFUSED "grant execute on function public.basecamp_public_branding() to service_role;"
+run_case "a second definer in public, same body, different name"      REFUSED "create function public.branding_copy() returns table(display_name text, logo_path text) language sql stable security definer set search_path to '' as \$x\$ select b.display_name, b.logo_path from basecamp.branding_settings b where b.singleton; \$x\$;"
+run_case "the branding permit-all copied onto another table"          REFUSED "create policy basecamp_branding_settings_select_authenticated on basecamp.entries for select to authenticated using (true);"
+run_case "a 0007 policy dropped after 0007"                           REFUSED "drop policy basecamp_branding_audit_select_admin on basecamp.branding_audit;"
+run_case "the branding audit writer detached after 0007"              REFUSED "drop trigger basecamp_branding_settings_audit on basecamp.branding_settings;"
 
 # ============================================================================
 # PART 13: THE EDITOR PATH. Everything above this line reached the database

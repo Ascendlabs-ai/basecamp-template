@@ -138,9 +138,14 @@ exists upstream:
    state (`can_read_basecamp_category` exists ⇒ `0006` has run), pins `0006`'s
    four gate bodies on the same existence guard as `0005`'s, and carves out
    `supabase_auth_admin`'s hook grant by name and signature. PART 12b holds the
-   cases. When the next migration replaces a pinned body or a named policy
-   predicate, do the same: a branch on a durable fact, never a set of two
-   acceptable answers;
+   cases. `0007` needed a different kind of admission — its public branding
+   projection is a definer *outside* `basecamp`, the exact shape the dependency
+   walk refuses — and it is admitted by name, owner, pinned `search_path` and
+   body digest, with PART 12c proving every edge of that admission. When the
+   next migration replaces a pinned body or a named policy predicate, do the
+   same: a branch on a durable fact, never a set of two acceptable answers; and
+   when it must add something the boundary would otherwise refuse, admit it by
+   digest and prove the edges, never by name alone;
 7. **PARTS 14-16, the runtime arms**, with `EXPECTED_RLS_CASES` and
    `run_rls_assert`. These ask a different question from everything else in the
    file: not "does `0002` refuse a broken schema?" but "does the DATABASE refuse

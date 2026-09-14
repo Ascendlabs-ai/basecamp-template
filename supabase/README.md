@@ -198,16 +198,20 @@ each of the following was checked and held on your database:
 None of that is a description of intent. Each item is an assertion inside `0002`
 that raises and rolls the whole file back if it does not hold.
 
-**Re-running `0002` to revalidate is valid through `0006` and not after `0007`.**
-Every object `0004`, `0005` and `0006` add is known to `0002` on an existence
+**Re-running `0002` to revalidate is valid at every point in the chain.**
+Every object `0004` through `0007` add is known to `0002` on an existence
 guard, so re-applying it against a database at any of those points commits or
-refuses on the merits. `0007` is different by design: it creates
+refuses on the merits. `0007` needed one deliberate admission: it creates
 `public.basecamp_public_branding()`, a SECURITY DEFINER function *outside*
-`basecamp` that reads one row of one table so the signed-out screens can show
-a name and a logo — exactly the shape `0002`'s dependency walk exists to
-refuse, and it does. `0007` carries its own apply-time assertions for that
-boundary instead. So: to revalidate a database that has taken `0007`, run the
-mutation suite against a mirror, not `0002` against the live database.
+`basecamp` that reads the display name and logo path of the one branding row
+so the signed-out screens can show them — exactly the shape `0002`'s
+dependency walk exists to refuse. `0002` admits that one function **by name,
+owner, pinned `search_path` and body digest**, and nothing else: widen the body
+by a column, unpin its search path, grant it to `PUBLIC` or `service_role`, or
+create a second definer beside it with the same body, and `0002` refuses.
+`0007`'s signed-in `using (true)` SELECT on `branding_settings` is admitted the
+same way, by table, name and command. Both admissions are mutation-tested in
+PART 12c.
 
 **And you can check that for yourself rather than taking it on trust.** The
 assertions are mutation-tested: `supabase/tests/boundary_mutations.sh` breaks one
@@ -224,7 +228,7 @@ plausible total while proving less.
 
 | Arm | What it asks |
 |---|---|
-| Static, `psql` | break one thing in a mirror, require `0002` to refuse |
+| Static, `psql` | break one thing in a mirror, require `0002` to refuse — including, in PARTS 12b and 12c, a revert of either catalog policy to its pre-`0006` predicate, a gutted `0006` gate, a widened `0007` projection, and a grant to Auth's role on anything but the hook |
 | Static, **Editor path** | the same, with the migrations pasted CRLF and whole-file, the way a client applies them |
 | Runtime | issue real statements as `authenticated` and require the **database** to refuse — including, in PART 16, a token the access-token hook never touched and a token carrying a forged `basecamp_access` claim, both of which must see nothing |
 | `0004` under test | break something *before* `0004` runs, and require `0004` to refuse |

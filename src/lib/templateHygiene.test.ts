@@ -652,7 +652,7 @@ test("the mutation suite's declared editor-arm case count matches the cases it r
  * end. The suite checks the fixtures at runtime; this checks that the code
  * which builds them is still there at all, with no database.
  *
- * ALL FOUR MIGRATIONS, not just the first two. The arm is supposed to differ
+ * EVERY MIGRATION IN THE CHAIN, not just the first two. The arm is supposed to differ
  * from the psql arm in TRANSPORT and nothing else, and `0004` carries a digest
  * pin of its own: an arm that stopped at `0002` would leave that pin covered on
  * the maintainer's route and uncovered on the client's, which is the exact shape
@@ -694,12 +694,14 @@ test("the Editor-path arm still converts to CRLF and applies the same chain", ()
     .filter(Boolean)
     .map((entry) => shellVars.get(entry) ?? entry);
 
-  // Every migration the 0002 mutation suite owns. 0003 is data-only. 0007 adds
-  // a later branding boundary with its own apply-time and static assertions;
-  // replaying 0002 after it is intentionally invalid because 0002 pins the
-  // earlier function and policy set exactly.
+  // Every migration the 0002 mutation suite owns. 0003 is data-only and is the
+  // only one left out. 0007 used to be excluded too — its public branding
+  // projection is a SECURITY DEFINER outside basecamp, and 0002 refused every
+  // re-run after it — until 0002 learned to admit that one function by name,
+  // owner, pinned search_path and body digest. The mirror now carries the
+  // whole documented chain, so a migration missing here is a real omission.
   const shipped = readdirSync(path.join(ROOT, "supabase", "migrations"))
-    .filter((f) => f.endsWith(".sql") && !f.startsWith("0003") && !f.startsWith("0007"))
+    .filter((f) => f.endsWith(".sql") && !f.startsWith("0003"))
     .sort();
   const missing = shipped.filter((f) => !listed.some((entry) => entry.endsWith(`/${f}`)));
   assert.deepEqual(

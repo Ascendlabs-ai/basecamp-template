@@ -378,6 +378,9 @@ begin
                                   'can_read_basecamp_category','custom_access_token_hook',
                                   'enforce_oauth_client_mapping','audit_app_configuration',
                                   'refuse_app_configuration_audit_mutation',
+                                  -- Added by 0007. Both write or guard the
+                                  -- branding audit past its own RLS.
+                                  'audit_branding_change','refuse_branding_audit_mutation',
                                   -- The five that were missing. PROVEN: flipping
                                   -- has_grant to INVOKER passed this check while
                                   -- the helper lost its RLS bypass and vanished
@@ -963,6 +966,24 @@ begin
      where ns.nspname not in ('basecamp', 'pg_catalog')
        and p.prosecdef
        and (pg_has_role(p.proowner, 'postgres', 'USAGE') or r.rolbypassrls or r.rolsuper)
+       -- ONE ADMITTED EXCEPTION, and it is admitted by BODY, not by name.
+       -- 0007 creates `public.basecamp_public_branding()`: a definer outside
+       -- basecamp that reads the display name and logo path of the one
+       -- branding row so the signed-out screens can show them — exactly the
+       -- shape this walk exists to refuse, and it refused it for as long as
+       -- 0007 existed. It is let through only while ALL of these hold: the
+       -- exact name in `public`, owned by postgres, search_path pinned empty,
+       -- and a body whose normalized digest is the one 0007 ships. Widen the
+       -- body by one column and it lands back in this list with the generic
+       -- message; D23 below reports the same drift by name. `coalesce` is not
+       -- decoration: with the function absent, `p.oid = null` is NULL for
+       -- every row, and a NULL inside `not (...)` would let a same-bodied
+       -- definer elsewhere slip through.
+       and not (coalesce(p.oid = to_regprocedure('public.basecamp_public_branding()'), false)
+                and p.proowner = 'postgres'::regrole
+                and coalesce(p.proconfig, '{}'::text[]) @> array['search_path=""']
+                and md5(replace(replace(p.prosrc, chr(13) || chr(10), chr(10)),
+                                chr(13), chr(10))) = 'a6220e30cfa24850fbff9b6f5182dd5b')
        and (p.prosrc ~* '\mbasecamp\M'
          or exists (select 1 from unnest(coalesce(p.proconfig, '{}'::text[])) cfg
                      where cfg ~ '^search_path=' and cfg ~* '\mbasecamp\M')
@@ -1143,6 +1164,22 @@ begin
       detail := detail || format(E'\n    %s on %s (added by 0006)', bad.pol, bad.tbl);
     end loop;
   end if;
+  if to_regclass('basecamp.branding_settings') is not null then
+    for bad in
+      select t.tbl, t.pol from (values
+        ('branding_settings', 'basecamp_branding_settings_select_authenticated'),
+        ('branding_settings', 'basecamp_branding_settings_insert_admin'),
+        ('branding_settings', 'basecamp_branding_settings_update_admin'),
+        ('branding_audit',    'basecamp_branding_audit_select_admin')
+      ) as t(tbl, pol)
+      where not exists (
+        select 1 from pg_policies p
+         where p.schemaname = 'basecamp' and p.tablename = t.tbl and p.policyname = t.pol
+      )
+    loop
+      detail := detail || format(E'\n    %s on %s (added by 0007)', bad.pol, bad.tbl);
+    end loop;
+  end if;
   if detail <> '' then
     raise exception 'RLS polic(ies) missing or on the wrong table — access is enforced ENTIRELY by policy, so each of these is a missing access rule:%', detail;
   end if;
@@ -1200,6 +1237,52 @@ begin
   loop
     detail := detail || format(E'\n    %s on %s', bad.trg, bad.tbl);
   end loop;
+  -- 0006's and 0007's guards, on the same existence guard as everything else
+  -- those files add. The configuration and branding audits are append-only
+  -- for the same reason the access audit is, and a detached writer or a
+  -- disabled mutation guard is exactly what this named set exists to notice.
+  if to_regclass('basecamp.app_configuration_audit') is not null then
+    for bad in
+      select t.tbl, t.trg from (values
+        ('app_settings',            'basecamp_app_settings_set_updated_at'),
+        ('app_settings',            'basecamp_app_settings_audit'),
+        ('oauth_clients',           'basecamp_oauth_clients_validate'),
+        ('oauth_clients',           'basecamp_oauth_clients_audit'),
+        ('app_configuration_audit', 'basecamp_app_configuration_audit_no_mutation'),
+        ('app_configuration_audit', 'basecamp_app_configuration_audit_no_truncate')
+      ) as t(tbl, trg)
+      where not exists (
+        select 1 from pg_trigger tg
+          join pg_class c on c.oid = tg.tgrelid
+          join pg_namespace ns on ns.oid = c.relnamespace
+         where ns.nspname = 'basecamp' and not tg.tgisinternal
+           and tg.tgenabled in ('O','A')
+           and c.relname = t.tbl and tg.tgname = t.trg
+      )
+    loop
+      detail := detail || format(E'\n    %s on %s (added by 0006)', bad.trg, bad.tbl);
+    end loop;
+  end if;
+  if to_regclass('basecamp.branding_settings') is not null then
+    for bad in
+      select t.tbl, t.trg from (values
+        ('branding_settings', 'basecamp_branding_settings_set_updated_at'),
+        ('branding_settings', 'basecamp_branding_settings_audit'),
+        ('branding_audit',    'basecamp_branding_audit_no_mutation'),
+        ('branding_audit',    'basecamp_branding_audit_no_truncate')
+      ) as t(tbl, trg)
+      where not exists (
+        select 1 from pg_trigger tg
+          join pg_class c on c.oid = tg.tgrelid
+          join pg_namespace ns on ns.oid = c.relnamespace
+         where ns.nspname = 'basecamp' and not tg.tgisinternal
+           and tg.tgenabled in ('O','A')
+           and c.relname = t.tbl and tg.tgname = t.trg
+      )
+    loop
+      detail := detail || format(E'\n    %s on %s (added by 0007)', bad.trg, bad.tbl);
+    end loop;
+  end if;
   if detail <> '' then
     raise exception 'trigger(s) missing, on the wrong table, or disabled for origin traffic:%', detail;
   end if;
@@ -1539,6 +1622,48 @@ begin
     end if;
   end if;
 
+  -- D23 — 0007's PUBLIC PROJECTION, PINNED AND FENCED. Guarded on existence.
+  --
+  -- The outside-definer walk above admits `public.basecamp_public_branding()`
+  -- only while its body carries this digest, so a widened body is already
+  -- refused there — with a message about "an object OUTSIDE basecamp", which
+  -- is true and unhelpful. This names the drift. It also fences the
+  -- execution boundary 0007 asserts once, at apply time, and nothing re-checks:
+  -- PUBLIC and service_role must not hold EXECUTE (service_role reaches
+  -- basecamp directly and needs no projection; a PUBLIC grant would hand it to
+  -- every role on the cluster), and there must be exactly one function of
+  -- that name in `public` — an overload with the same name is a second
+  -- projection the walk's `to_regprocedure` would never look at.
+  if to_regprocedure('public.basecamp_public_branding()') is not null then
+    select count(*) into n
+      from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+     where ns.nspname = 'public' and p.proname = 'basecamp_public_branding';
+    if n <> 1 then
+      raise exception 'expected exactly 1 public.basecamp_public_branding, found % — an overload is a second read of basecamp from outside the schema', n;
+    end if;
+    if not exists (
+      select 1 from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+       where ns.nspname = 'public' and p.proname = 'basecamp_public_branding'
+         and p.prosecdef and p.proowner = 'postgres'::regrole
+         and coalesce(p.proconfig, '{}'::text[]) @> array['search_path=""']
+         and md5(replace(replace(p.prosrc, chr(13) || chr(10), chr(10)),
+                         chr(13), chr(10))) = 'a6220e30cfa24850fbff9b6f5182dd5b'
+    ) then
+      raise exception 'public.basecamp_public_branding() differs from the projection 0007 ships (body, owner or search_path) — it is the ONE definer outside basecamp this file admits, and only with that exact body. READ the new body before re-deriving its digest';
+    end if;
+    if has_function_privilege('service_role', 'public.basecamp_public_branding()', 'execute') then
+      raise exception 'service_role holds EXECUTE on public.basecamp_public_branding() — 0007 revokes it; the projection exists for anon and authenticated only';
+    end if;
+    if exists (
+      select 1 from pg_proc p
+       cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+       where p.oid = to_regprocedure('public.basecamp_public_branding()')
+         and a.grantee = 0
+    ) then
+      raise exception 'PUBLIC holds EXECUTE on public.basecamp_public_branding() — every role on the cluster can read the branding row through a definer';
+    end if;
+  end if;
+
   -- `auth.uid` is deliberately absent from this alternation: a policy rewritten
   -- `using (auth.uid() is not null)` names it and grants every signed-in user
   -- everything. No digest pin on the policy SET, unlike the function bodies
@@ -1557,6 +1682,17 @@ begin
   select count(*) into n
     from pg_policies
    where schemaname = 'basecamp'
+     -- ONE ADMITTED PERMIT-ALL, by table, name and command. 0007's
+     -- `basecamp_branding_settings_select_authenticated` is `using (true)` on
+     -- purpose: the display name and logo path are what every signed-in
+     -- screen draws, they contain no secret, and anon already reads the same
+     -- two values through the public projection. A signed-in user reading
+     -- them is not a disclosure. The admission is SELECT on that one table
+     -- under that one name — a permit-all under any other name, on any other
+     -- table, or for any other command is still refused below.
+     and not (tablename = 'branding_settings'
+              and policyname = 'basecamp_branding_settings_select_authenticated'
+              and cmd = 'SELECT')
      and (coalesce(qual, '') || coalesce(with_check, '')
           !~ 'is_super_admin|category_has_grant|has_grant|can_read_entry|can_read_category|can_read_basecamp_entry|can_read_basecamp_category'
           -- `or true` names an allowed helper and still permits everything, so

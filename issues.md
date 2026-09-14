@@ -443,10 +443,26 @@ checked — that's what makes this section useful six months from now instead of
   and the three edges of the `supabase_auth_admin` carve-out — each proven REFUSED),
   **30/30** runtime, **7/7** with `0004` under test, exit 0. `0002` re-runs clean on a mirror
   stopped at `0005` and on one at `0006`. The documented chain `0001`→`0007` applies fresh.
-  `npm run lint && npx tsc --noEmit && npm test` clean (**221 tests**). **Left as designed:**
-  `0002` still refuses after `0007`, because `0007`'s public branding projection is a definer
-  outside `basecamp` — the exact shape the dependency walk exists to catch. The hygiene test
-  records that as intentional and the runbook now says so.
+  `npm run lint && npx tsc --noEmit && npm test` clean (**221 tests**).
+
+  **And then `0007`, the same day.** `0002` still refused after `0007`, because `0007`'s public
+  branding projection is a SECURITY DEFINER outside `basecamp` — the exact shape the dependency
+  walk exists to catch — and the hygiene test had recorded that as intentional, keeping `0007`
+  out of the suite's chain. It is now admitted, but by **body**, not by name: exactly one
+  `public.basecamp_public_branding()`, owned by `postgres`, `search_path` pinned empty, and the
+  normalized digest `0007` ships. Widen it by a column, unpin it, grant it to `PUBLIC` or
+  `service_role`, or create a second definer beside it with the same body, and `0002` refuses.
+  `0007`'s signed-in `using (true)` SELECT on `branding_settings` is admitted the same way, by
+  table, name and command. `0007`'s policies and triggers, and `0006`'s triggers, joined the
+  named sets on the existence guard; `0007` joined the suite's `MIGRATIONS`; the hygiene test's
+  exclusion is gone.
+
+  **Checked, on PostgreSQL 17.10, full chain `0001`→`0007` in every arm:** **142/142** static
+  and Editor (PART 12c adds nine — the widened body, the unpinned search path, both bad grants,
+  the same-body twin, the permit-all copied onto another table, a dropped `0007` policy, a
+  detached branding audit writer, and a detached configuration audit writer — each REFUSED),
+  **30/30** runtime, **7/7** with `0004` under test, exit 0. `0002` re-runs clean at `0005`,
+  `0006` and `0007`. `npm run lint && npx tsc --noEmit && npm test` clean (**221 tests**).
 
 - **The access-token hook: documented, and the fail-open question settled by execution.**
   `2026-09-13` A read-only briefing on `0004`–`0007` found two dashboard steps no migration can
