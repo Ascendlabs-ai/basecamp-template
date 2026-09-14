@@ -154,8 +154,17 @@ each of the following was checked and held on your database:
   non-admin arm of the categories SELECT policy). The second is why the list is
   worth re-reading when you add a migration: it arrived checked for existence and
   for being a definer, and neither of those stops a body of `select true` from
-  handing every category to somebody with no grants. Nine bodies are pinned in
-  total once the chain is fully applied;
+  handing every category to somebody with no grants. **Four more arrive with
+  `0006`** and are pinned on the same existence guard: `can_access_app_for_user`,
+  `can_read_basecamp_entry` and `can_read_basecamp_category`, which together
+  become the entire non-admin arm of the entries and categories SELECT policies
+  once `0006` has run, and `custom_access_token_hook`, the only thing that
+  refuses an SSO token to a person without access. Thirteen bodies are pinned
+  in total once the chain is fully applied. **Which categories predicate the
+  policy must name is selected by applied state too** — `category_or_child_has_grant`
+  until `0006`, `can_read_basecamp_category` after — so a policy put back on
+  the older gate is refused as a revert rather than accepted as "still
+  nesting-aware";
 
   `list_people` is the one exception to "identically": `0004` replaces its body
   to add ban state and member type, and `0002` runs both before and after that.
@@ -188,6 +197,17 @@ each of the following was checked and held on your database:
 
 None of that is a description of intent. Each item is an assertion inside `0002`
 that raises and rolls the whole file back if it does not hold.
+
+**Re-running `0002` to revalidate is valid through `0006` and not after `0007`.**
+Every object `0004`, `0005` and `0006` add is known to `0002` on an existence
+guard, so re-applying it against a database at any of those points commits or
+refuses on the merits. `0007` is different by design: it creates
+`public.basecamp_public_branding()`, a SECURITY DEFINER function *outside*
+`basecamp` that reads one row of one table so the signed-out screens can show
+a name and a logo — exactly the shape `0002`'s dependency walk exists to
+refuse, and it does. `0007` carries its own apply-time assertions for that
+boundary instead. So: to revalidate a database that has taken `0007`, run the
+mutation suite against a mirror, not `0002` against the live database.
 
 **And you can check that for yourself rather than taking it on trust.** The
 assertions are mutation-tested: `supabase/tests/boundary_mutations.sh` breaks one

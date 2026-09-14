@@ -366,6 +366,18 @@ begin
                                   -- as an INVOKER it would recurse against the
                                   -- policy that calls it.
                                   'category_or_child_has_grant',
+                                  -- Added by 0006. The three read gates answer
+                                  -- through app_settings, members and the
+                                  -- grant tables from inside the policies on
+                                  -- entries and categories; the token hook
+                                  -- runs as supabase_auth_admin, which holds
+                                  -- nothing in this schema; the two trigger
+                                  -- functions write the configuration audit
+                                  -- past its own RLS.
+                                  'can_access_app_for_user','can_read_basecamp_entry',
+                                  'can_read_basecamp_category','custom_access_token_hook',
+                                  'enforce_oauth_client_mapping','audit_app_configuration',
+                                  'refuse_app_configuration_audit_mutation',
                                   -- The five that were missing. PROVEN: flipping
                                   -- has_grant to INVOKER passed this check while
                                   -- the helper lost its RLS bypass and vanished
@@ -683,7 +695,47 @@ begin
     -- bare `category_has_grant` would make a container parent invisible while
     -- its children stay visible — the client then holds a parent_id it cannot
     -- resolve, and the grouping the administrator built does not render.
-    if to_regprocedure('basecamp.category_or_child_has_grant(uuid)') is not null
+    --
+    -- WHICH PREDICATE DEPENDS ON APPLIED STATE, selected the way list_people's
+    -- digest is selected below and for the same reason. 0006 replaces this
+    -- policy: its non-admin arm becomes `can_read_basecamp_category`, which
+    -- answers through the app-settings contract (active, everyone/selected)
+    -- and still walks one level down to a child. So after 0006 the policy
+    -- MUST name the 0006 gate, and a policy put back on
+    -- `category_or_child_has_grant` is a revert of the product contract —
+    -- refused, not accepted as "still nesting-aware". Before 0006 the 0005
+    -- predicate is the right one. A set of two acceptable names would let the
+    -- revert pass; a branch does not.
+    --
+    -- The selector is `can_read_basecamp_category` itself, which 0006 creates
+    -- and nothing else does. It cannot be dropped out from under the policy
+    -- that names it — PostgreSQL refuses without CASCADE, and CASCADE takes the
+    -- policy with it, which the named-policy set below then reports missing.
+    --
+    -- PROVEN NEEDED, 2026-09-14: with the unconditional 0005 check, every
+    -- re-run of this file after 0006 refused — the mutation suite's control
+    -- case went red and stayed red, and every static case that expects a
+    -- COMMIT failed with it, so the suite could no longer tell a broken mirror
+    -- from a clean one.
+    if to_regprocedure('basecamp.can_read_basecamp_category(uuid)') is not null then
+      if not exists (
+        select 1 from pg_policies
+         where schemaname = 'basecamp' and tablename = 'categories' and cmd = 'SELECT'
+           and qual like '%can_read_basecamp_category%'
+      ) then
+        raise exception 'the categories SELECT policy no longer consults can_read_basecamp_category — 0006 is applied, so a policy back on the 0005 predicate reads past the app-settings contract';
+      end if;
+      -- 0006 rewrites the entries policy the same way, and the same revert is
+      -- possible there: a policy back on bare `can_read_entry` shows inactive
+      -- apps and ignores everyone/selected mode.
+      if not exists (
+        select 1 from pg_policies
+         where schemaname = 'basecamp' and tablename = 'entries' and cmd = 'SELECT'
+           and qual like '%can_read_basecamp_entry%'
+      ) then
+        raise exception 'the entries SELECT policy no longer consults can_read_basecamp_entry — 0006 is applied, so a policy back on the 0001 predicate ignores app activity and access mode';
+      end if;
+    elsif to_regprocedure('basecamp.category_or_child_has_grant(uuid)') is not null
        and not exists (
          select 1 from pg_policies
           where schemaname = 'basecamp' and tablename = 'categories' and cmd = 'SELECT'
@@ -1020,6 +1072,80 @@ begin
   if n < 26 then
     raise exception 'basecamp has % RLS policies, expected at least 26 — access is enforced ENTIRELY by policy, so a missing policy is a missing access rule', n;
   end if;
+  -- THE POLICIES, NAMED AND TABLE-QUALIFIED — for the reason the trigger set
+  -- below gives at length: a floor is structurally incapable of the job. PROVEN
+  -- 2026-09-14, the same way the trigger floor was proven: 0006 took the real
+  -- count to 35, and the suite's own "an RLS policy was dropped" case — which
+  -- removes the audit log's only SELECT policy — COMMITTED against the
+  -- unchanged floor of 26. Nine policies of slack, and the first one dropped
+  -- was the one that keeps the audit log administrator-only.
+  --
+  -- 0006's nine are required only once 0006 has run, on the same existence
+  -- guard every other post-0002 object uses. The two `_select_granted` policies
+  -- appear once: 0006 drops and recreates them under the same names, so the
+  -- name set is stable across the chain and only the PREDICATE moves — that is
+  -- checked separately, by applied state, at (2c).
+  detail := '';
+  for bad in
+    select t.tbl, t.pol from (values
+      ('access_audit',  'basecamp_access_audit_select_super_admin'),
+      ('access_grants', 'basecamp_access_grants_delete_super_admin'),
+      ('access_grants', 'basecamp_access_grants_insert_super_admin'),
+      ('access_grants', 'basecamp_access_grants_select_super_admin'),
+      ('categories',    'basecamp_categories_delete_super_admin'),
+      ('categories',    'basecamp_categories_insert_super_admin'),
+      ('categories',    'basecamp_categories_select_granted'),
+      ('categories',    'basecamp_categories_update_super_admin'),
+      ('entries',       'basecamp_entries_delete_super_admin'),
+      ('entries',       'basecamp_entries_insert_super_admin'),
+      ('entries',       'basecamp_entries_select_granted'),
+      ('entries',       'basecamp_entries_update_super_admin'),
+      ('member_types',  'basecamp_member_types_delete_super_admin'),
+      ('member_types',  'basecamp_member_types_insert_super_admin'),
+      ('member_types',  'basecamp_member_types_select_scoped'),
+      ('member_types',  'basecamp_member_types_update_super_admin'),
+      ('members',       'basecamp_members_delete_super_admin'),
+      ('members',       'basecamp_members_insert_super_admin'),
+      ('members',       'basecamp_members_select_self_or_super_admin'),
+      ('members',       'basecamp_members_update_super_admin'),
+      ('super_admins',  'basecamp_super_admins_delete_super_admin'),
+      ('super_admins',  'basecamp_super_admins_insert_super_admin'),
+      ('super_admins',  'basecamp_super_admins_select_super_admin'),
+      ('type_grants',   'basecamp_type_grants_delete_super_admin'),
+      ('type_grants',   'basecamp_type_grants_insert_super_admin'),
+      ('type_grants',   'basecamp_type_grants_select_super_admin')
+    ) as t(tbl, pol)
+    where not exists (
+      select 1 from pg_policies p
+       where p.schemaname = 'basecamp' and p.tablename = t.tbl and p.policyname = t.pol
+    )
+  loop
+    detail := detail || format(E'\n    %s on %s', bad.pol, bad.tbl);
+  end loop;
+  if to_regprocedure('basecamp.can_read_basecamp_category(uuid)') is not null then
+    for bad in
+      select t.tbl, t.pol from (values
+        ('app_configuration_audit', 'basecamp_app_configuration_audit_select_admin'),
+        ('app_settings',            'basecamp_app_settings_delete_admin'),
+        ('app_settings',            'basecamp_app_settings_insert_admin'),
+        ('app_settings',            'basecamp_app_settings_select_scoped'),
+        ('app_settings',            'basecamp_app_settings_update_admin'),
+        ('oauth_clients',           'basecamp_oauth_clients_delete_admin'),
+        ('oauth_clients',           'basecamp_oauth_clients_insert_admin'),
+        ('oauth_clients',           'basecamp_oauth_clients_select_scoped'),
+        ('oauth_clients',           'basecamp_oauth_clients_update_admin')
+      ) as t(tbl, pol)
+      where not exists (
+        select 1 from pg_policies p
+         where p.schemaname = 'basecamp' and p.tablename = t.tbl and p.policyname = t.pol
+      )
+    loop
+      detail := detail || format(E'\n    %s on %s (added by 0006)', bad.pol, bad.tbl);
+    end loop;
+  end if;
+  if detail <> '' then
+    raise exception 'RLS polic(ies) missing or on the wrong table — access is enforced ENTIRELY by policy, so each of these is a missing access rule:%', detail;
+  end if;
   select count(*) into n from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
    where ns.nspname = 'basecamp';
   if n < 13 then
@@ -1143,6 +1269,15 @@ begin
   -- FUNCTION ACLs by principal. PUBLIC only matters on a definer function
   -- (an invoker function runs as the caller, and PUBLIC EXECUTE is the language
   -- default); any NAMED principal outside the three roles matters always.
+  --
+  -- ONE NAMED EXCEPTION, exactly one function wide. 0006 grants
+  -- `supabase_auth_admin` — the role Supabase Auth connects as — EXECUTE on
+  -- `custom_access_token_hook(jsonb)`, because that is how Auth calls the hook;
+  -- 0006 asserts the grant, and a hook Auth cannot call is a hook that never
+  -- runs. It is carved out by NAME AND SIGNATURE, not by role: EXECUTE for
+  -- supabase_auth_admin on any OTHER function in this schema is still refused
+  -- here, so a grant that would let Auth's role read the catalog through a
+  -- definer helper cannot hide behind the hook's exception.
   detail := '';
   for bad in
     select p.proname,
@@ -1154,7 +1289,10 @@ begin
      where ns.nspname = 'basecamp'
        and ((a.grantee = 0 and p.prosecdef)
             or (a.grantee <> 0
-                and a.grantee::regrole::text not in ('postgres','authenticated','service_role')))
+                and a.grantee::regrole::text not in ('postgres','authenticated','service_role')
+                and not (a.grantee::regrole::text = 'supabase_auth_admin'
+                         and a.privilege_type = 'EXECUTE'
+                         and p.oid = to_regprocedure('basecamp.custom_access_token_hook(jsonb)'))))
   loop
     detail := detail || format(E'\n    %s: %s holds %s', bad.proname, bad.who, bad.privilege_type);
   end loop;
@@ -1363,6 +1501,44 @@ begin
     raise exception 'an access-model function body differs from the one this template ships, or has gained an overload — READ the new body before re-deriving its digest:%', detail;
   end if;
 
+  -- D22 — 0006's READ GATES AND TOKEN GATE, PINNED. Guarded on existence like
+  -- D21, and for the same reason: on a fresh stamp this file runs before 0006.
+  --
+  -- After 0006, `can_read_basecamp_entry` and `can_read_basecamp_category` ARE
+  -- the non-admin arm of the entries and categories SELECT policies, and both
+  -- delegate to `can_access_app_for_user`. A body of `select true` in any of
+  -- the three keeps prosecdef, keeps the policy's mention, passes the definer
+  -- hardening in section 1, and discloses the whole catalog to a signed-in
+  -- person with zero grants — the identical defeat D21 records for the 0005
+  -- gate. `custom_access_token_hook` is pinned beside them because it is the
+  -- only thing that refuses an OAuth token to a person without access; a body
+  -- that returns the claims unchanged passes every privilege check 0006 makes
+  -- and issues SSO tokens to everyone. Same loop shape as the pin above:
+  -- ARITY is checked through the count, so an overload is refused too.
+  if to_regprocedure('basecamp.can_read_basecamp_category(uuid)') is not null then
+    detail := '';
+    for bad in
+      select f.fn, count(p.oid) as n from (values
+        ('can_access_app_for_user',    '2ebaea2e34c91e7dbc182f466f5365ca'),
+        ('can_read_basecamp_entry',    '140a23a6c48ca5e3e7e75414eaf4f269'),
+        ('can_read_basecamp_category', 'fc418ac1635d8748586bbb6acadc183a'),
+        ('custom_access_token_hook',   '9eb19f074bc0c5bf4c8603de6b4aacdb')
+      ) as f(fn, expected)
+      left join (pg_proc p join pg_namespace ns on ns.oid = p.pronamespace and ns.nspname = 'basecamp')
+        on p.proname = f.fn
+      group by f.fn, f.expected
+      having count(p.oid) <> 1
+          or count(*) filter (
+               where md5(replace(replace(p.prosrc, chr(13) || chr(10), chr(10)),
+                                 chr(13), chr(10))) = f.expected) <> 1
+    loop
+      detail := detail || format(E'\n    %s (%s definition(s) in basecamp)', bad.fn, bad.n);
+    end loop;
+    if detail <> '' then
+      raise exception 'a 0006 gate body differs from the one this template ships, or has gained an overload — READ the new body before re-deriving its digest:%', detail;
+    end if;
+  end if;
+
   -- `auth.uid` is deliberately absent from this alternation: a policy rewritten
   -- `using (auth.uid() is not null)` names it and grants every signed-in user
   -- everything. No digest pin on the policy SET, unlike the function bodies
@@ -1382,7 +1558,7 @@ begin
     from pg_policies
    where schemaname = 'basecamp'
      and (coalesce(qual, '') || coalesce(with_check, '')
-          !~ 'is_super_admin|category_has_grant|has_grant|can_read_entry|can_read_category'
+          !~ 'is_super_admin|category_has_grant|has_grant|can_read_entry|can_read_category|can_read_basecamp_entry|can_read_basecamp_category'
           -- `or true` names an allowed helper and still permits everything, so
           -- a mention test alone is not enough.
           --
@@ -1421,6 +1597,33 @@ begin
     raise exception 'a definer TRIGGER function is executable by someone other than its owner — CREATE TRIGGER would exercise that grant and run it as the owner:%', detail;
   end if;
 
+  -- TABLE ACLs by principal — the check that was MISSING. The two selects
+  -- below cover column and schema privileges, and the function loop above
+  -- covers EXECUTE, but nothing asked who holds a privilege on a TABLE. Found
+  -- 2026-09-14 while carving out supabase_auth_admin's hook grant: `grant
+  -- select on basecamp.entries to supabase_auth_admin` committed clean, which
+  -- would have let a compromised Auth role read the catalog. Same shape as the
+  -- column select, deliberately: named roles only, no PUBLIC, no exceptions —
+  -- the hook grant is EXECUTE, and USAGE is a schema privilege, so neither
+  -- belongs here and neither is carved out here.
+  detail := '';
+  for bad in
+    select c.relname as obj,
+           case when a.grantee = 0 then 'PUBLIC' else a.grantee::regrole::text end as who,
+           a.privilege_type
+      from pg_class c
+      join pg_namespace ns on ns.oid = c.relnamespace
+      cross join lateral aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a
+     where ns.nspname = 'basecamp' and c.relkind in ('r','p','v','m','S')
+       and (a.grantee = 0
+            or a.grantee::regrole::text not in ('postgres','authenticated','service_role'))
+  loop
+    detail := detail || format(E'\n    %s: %s holds %s', bad.obj, bad.who, bad.privilege_type);
+  end loop;
+  if detail <> '' then
+    raise exception 'an unexpected principal holds a TABLE privilege inside basecamp:%', detail;
+  end if;
+
   detail := '';
   for bad in
     select c.relname || '.' || att.attname as obj,
@@ -1434,6 +1637,10 @@ begin
        and (a.grantee = 0
             or a.grantee::regrole::text not in ('postgres','authenticated','service_role'))
     union all
+    -- `supabase_auth_admin` may hold USAGE on the schema and nothing more: 0006
+    -- grants it so Auth can resolve `basecamp.custom_access_token_hook` at all.
+    -- USAGE alone reaches no table — the TABLE check just above refuses that
+    -- role by name — and CREATE for it is refused right here.
     select 'schema basecamp',
            case when a.grantee = 0 then 'PUBLIC' else a.grantee::regrole::text end,
            a.privilege_type
@@ -1441,7 +1648,8 @@ begin
       cross join lateral aclexplode(coalesce(ns.nspacl, acldefault('n', ns.nspowner))) a
      where ns.nspname = 'basecamp'
        and (a.grantee = 0
-            or a.grantee::regrole::text not in ('postgres','authenticated','service_role')
+            or (a.grantee::regrole::text not in ('postgres','authenticated','service_role')
+                and not (a.grantee::regrole::text = 'supabase_auth_admin' and a.privilege_type = 'USAGE'))
             or (a.privilege_type = 'CREATE' and a.grantee <> ns.nspowner))
   loop
     detail := detail || format(E'\n    %s: %s holds %s', bad.obj, bad.who, bad.privilege_type);

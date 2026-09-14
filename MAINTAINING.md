@@ -128,7 +128,19 @@ exists upstream:
    route and unproven on the client's, which is the shape of the bug this arm
    exists to end. That is not hypothetical either: the ported `0004` arrived with
    a raw `md5(prosrc)` pin, and reverting to it makes the psql arm report 110
-   passed while every Editor case fails at `0004 via editor path`;
+   passed while every Editor case fails at `0004 via editor path`.
+
+   **And it must stay green when a migration REPLACES something `0002` pins.**
+   `0006` replaced both catalog SELECT policies, and for two weeks every re-run
+   of `0002` after it refused — the control case red, every COMMIT-expecting
+   case red with it, and the suite unable to tell a broken mirror from a clean
+   one. `0002` now selects which predicate the policies must name by applied
+   state (`can_read_basecamp_category` exists ⇒ `0006` has run), pins `0006`'s
+   four gate bodies on the same existence guard as `0005`'s, and carves out
+   `supabase_auth_admin`'s hook grant by name and signature. PART 12b holds the
+   cases. When the next migration replaces a pinned body or a named policy
+   predicate, do the same: a branch on a durable fact, never a set of two
+   acceptable answers;
 7. **PARTS 14-16, the runtime arms**, with `EXPECTED_RLS_CASES` and
    `run_rls_assert`. These ask a different question from everything else in the
    file: not "does `0002` refuse a broken schema?" but "does the DATABASE refuse

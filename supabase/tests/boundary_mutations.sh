@@ -19,7 +19,7 @@
 # boundary". Read that before treating a green run as a clean bill of health.
 #
 # FOUR ARMS, AND THEY ANSWER DIFFERENT QUESTIONS. Do not collapse them.
-#   * Parts 1-12  — STATIC, psql transport. Break one thing in a mirror, require
+#   * Parts 1-12b — STATIC, psql transport. Break one thing in a mirror, require
 #                   `0002` to refuse. Counted by EXPECTED_CASES.
 #   * Part 13     — STATIC, EDITOR transport. The same migrations applied the way
 #                   a client applies them: pasted, CRLF, whole-file. A green psql
@@ -190,7 +190,7 @@ EXPECTED_WHITELIST_HITS=6
 # silent-reversion failure the whole boundary is defended against, applied to
 # the artifact that is its only proof. Change this number in the same commit as
 # a case, never to make a run go quiet.
-EXPECTED_CASES=113
+EXPECTED_CASES=122
 
 # Cases `0002` is expected to COMMIT rather than refuse, because it ASSIGNS as
 # well as asserts: sections 1-2 pin ownership and fix EXECUTE grants, so
@@ -643,6 +643,40 @@ run_case "the nesting read gate stubbed, tokens hidden in a COMMENT" REFUSED "cr
 # the named trigger set.
 run_case "a guard trigger moved to another table, name kept" REFUSED "drop trigger basecamp_member_types_no_system_delete on basecamp.member_types; create trigger basecamp_member_types_no_system_delete before insert on basecamp.categories for each row execute function basecamp.set_updated_at();"
 
+echo
+echo "=== PART 12b: THE PRODUCT CONTRACT — 0006's gates under 0002, proven to bite ==="
+# 0006 rewrites the two catalog SELECT policies and adds the token hook, and
+# for two weeks after it joined the chain 0002 simply refused every post-0006
+# database — the control went red and every COMMIT-expecting case with it. The
+# fix selects which predicate the policies must name by applied state, pins
+# 0006's four gate bodies, and carves out supabase_auth_admin's hook grant by
+# name. Each of those is a place a revert or a widening could now hide, so each
+# gets a case.
+#
+# THE TWO REVERTS. Putting a policy back on its pre-0006 predicate keeps every
+# mention test happy — both older helpers still exist and are still pinned —
+# and silently reads past the app-settings contract.
+run_case "categories policy reverted to the 0005 predicate after 0006" REFUSED "drop policy basecamp_categories_select_granted on basecamp.categories; create policy basecamp_categories_select_granted on basecamp.categories for select to authenticated using ((select basecamp.is_super_admin()) or basecamp.category_or_child_has_grant(id));"
+run_case "entries policy reverted to the 0001 predicate after 0006"    REFUSED "drop policy basecamp_entries_select_granted on basecamp.entries; create policy basecamp_entries_select_granted on basecamp.entries for select to authenticated using ((select basecamp.is_super_admin()) or basecamp.can_read_entry(id, category_id));"
+# THE SLACK. Nine policies arrived with 0006 and the count floor of 26 absorbed
+# any one of them — PART 1's "an RLS policy was dropped" COMMITTED once 0006
+# joined the chain. Both sets are named and table-qualified now; this drops one
+# of 0006's own, which only the guarded set can notice.
+run_case "a 0006 policy dropped after 0006"                           REFUSED "drop policy basecamp_app_settings_select_scoped on basecamp.app_settings;"
+# THE GUTTED GATES. Same defeat D21 records for the 0005 gate: prosecdef kept,
+# the policy's mention kept, section 1's hardening satisfied, whole catalog
+# disclosed. The hook variant issues an SSO token to everyone while passing
+# every privilege assertion 0006 makes.
+run_case "can_read_basecamp_entry gutted to select true"              REFUSED "create or replace function basecamp.can_read_basecamp_entry(p_entry_id uuid) returns boolean language sql stable security definer set search_path to '' as \$x\$ select true \$x\$;"
+run_case "can_access_app_for_user gutted to select true"              REFUSED "create or replace function basecamp.can_access_app_for_user(p_user_id uuid, p_entry_id uuid) returns boolean language sql stable security definer set search_path to '' as \$x\$ select true \$x\$;"
+run_case "the token hook gutted to return claims unchanged"           REFUSED "create or replace function basecamp.custom_access_token_hook(event jsonb) returns jsonb language plpgsql security definer set search_path to '' as \$x\$ begin return jsonb_build_object('claims', event->'claims'); end \$x\$;"
+# THE CARVE-OUT'S EDGES. supabase_auth_admin may hold EXECUTE on the hook and
+# USAGE on the schema, and nothing else. The table case is the one that used
+# to COMMIT: nothing in 0002 asked who holds a privilege on a TABLE.
+run_case "a table granted to Auth's role"                             REFUSED "grant select on basecamp.entries to supabase_auth_admin;"
+run_case "EXECUTE on a second function granted to Auth's role"        REFUSED "grant execute on function basecamp.is_super_admin() to supabase_auth_admin;"
+run_case "CREATE on the schema granted to Auth's role"                REFUSED "grant create on schema basecamp to supabase_auth_admin;"
+
 # ============================================================================
 # PART 13: THE EDITOR PATH. Everything above this line reached the database
 # through `psql -f` on files with LF endings — the maintainer's route, not the
@@ -913,7 +947,12 @@ rls_setup () {
   $BASE -c "drop database if exists $RLSDB;" -c "create database $RLSDB;" >/dev/null 2>&1 || return 1
   $BASE -d $RLSDB -f "$SP/_supabase_surface_stub.sql"                      >/dev/null 2>&1 || return 1
   apply_chain "PART 14 setup" rls_fail psql "$RLSDB" "${#MIGRATIONS[@]}"                   || return 1
-  $BASE -d $RLSDB -c "insert into auth.users (id,email) values ('$ADMIN_UID','admin@test'),('$OTHER_UID','nobody@test'),('$SPARE_UID','spare@test'); insert into basecamp.super_admins (user_id) values ('$ADMIN_UID');" >/dev/null 2>&1 || return 1
+  # OTHER_UID holds a member TYPE and nothing else — the person the access model
+  # exists to keep out. Since 0006 that type is load-bearing: can_access_app_for_user
+  # answers false for a non-member however many grants they hold, so a stranger
+  # with no members row could never read the fixtures PART 15 grants them and
+  # its read-then-refuse cases would fail at the readability pre-check.
+  $BASE -d $RLSDB -c "insert into auth.users (id,email) values ('$ADMIN_UID','admin@test'),('$OTHER_UID','nobody@test'),('$SPARE_UID','spare@test'); insert into basecamp.super_admins (user_id) values ('$ADMIN_UID'); insert into basecamp.members (user_id, member_type_id) select '$OTHER_UID', id from basecamp.member_types where slug = 'staff';" >/dev/null 2>&1 || return 1
 }
 if ! rls_setup; then
   echo "  ERROR   PART 14 setup failed — cannot build the runtime mirror" >&2
@@ -1142,6 +1181,12 @@ begin
      auth_boundary, trigger_type, owner, slug)
     values (cat_id, 'Tile', 'x', 'reference_only', 'active', 'unknown', 'unknown', 'user', 'o', 'del-target-e')
     returning id into ent_id;
+  -- Since 0006 a grant alone shows nothing: the entry must also be an ACTIVE
+  -- app in SELECTED mode, which Admin → Catalog writes through configure_app
+  -- and this fixture writes directly. Without this row the readability
+  -- pre-check below fails and the case proves nothing about the DELETE policy.
+  insert into basecamp.app_settings (entry_id, access_mode, auth_mode, is_active)
+    values (ent_id, 'selected', 'link_only', true);
   insert into basecamp.access_grants (user_id, entry_id) values ('$OTHER_UID', ent_id);
 
   set local role authenticated;
@@ -1187,6 +1232,9 @@ begin
      auth_boundary, trigger_type, owner, slug)
     values (cat_id, 'Tile', 'x', 'reference_only', 'active', 'unknown', 'unknown', 'user', 'o', 'ren-target-e')
     returning id into ent_id;
+  -- Same 0006 requirement as the DELETE case above: active, selected app.
+  insert into basecamp.app_settings (entry_id, access_mode, auth_mode, is_active)
+    values (ent_id, 'selected', 'link_only', true);
   insert into basecamp.access_grants (user_id, entry_id) values ('$OTHER_UID', ent_id);
 
   set local role authenticated;
@@ -1234,6 +1282,10 @@ begin
      auth_boundary, trigger_type, owner, slug)
     values (sub_id, 'Tile', 'x', 'reference_only', 'active', 'unknown', 'unknown', 'user', 'o', 'vis-e')
     returning id into ent_id;
+  -- Same 0006 requirement: the child's entry must be an active, selected app,
+  -- or can_read_basecamp_category finds nothing readable one level down.
+  insert into basecamp.app_settings (entry_id, access_mode, auth_mode, is_active)
+    values (ent_id, 'selected', 'link_only', true);
   insert into basecamp.access_grants (user_id, entry_id) values ('$OTHER_UID', ent_id);
 
   set local role authenticated;

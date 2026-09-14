@@ -223,21 +223,6 @@ Four things were decided rather than merely merged, and each is worth knowing:
 
 ## Known limits
 
-- **`boundary_mutations.sh` is red on the current chain, and has been since `0006` joined it.**
-  Seen 2026-09-13, PostgreSQL 17.10: 9 static cases and 3 runtime cases fail, every one of them
-  for the same reason — `0002`, re-run after `0006`, refuses with *the categories SELECT policy no
-  longer consults `category_or_child_has_grant`*, because `0006` replaced that policy with one
-  built on `can_read_basecamp_category()`. A fresh install is not affected: `0002` runs *before*
-  `0006` and commits. What is affected is the proof — every static case expecting COMMITTED
-  (the control included) now gets REFUSED, so the suite cannot tell a broken mirror from a clean
-  one, and the three nesting-visibility runtime cases fail because `0006` made an entry readable
-  only once it has an active `app_settings` row, which those cases never create. **Next action:**
-  teach `0002` the post-`0006` policy shape (pin `can_read_basecamp_category` /
-  `can_read_basecamp_entry` the way the other nine bodies are pinned, and accept either
-  categories policy by whether `0006` has been applied, as the `list_people` digest already does
-  for `0004`), then give the PART 15 nesting cases an `app_settings` row. PART 16 (the token
-  hook, added 2026-09-13) and PART 17 (`0004` under test) pass in full on the same run.
-
 - **The admin screens read every row in one request, and refuse to render past
   PostgREST's cap.** `/admin/catalog` and `/admin/access` compare the rows they
   received against an exact count and show an error instead of a partial
@@ -324,6 +309,12 @@ reading is "`0002` will not catch a hostile or careless administrator", not "you
       anything that assembles its query at run time instead of declaring it, and definers inside
       `basecamp` itself beyond those that are checksum-pinned.
 
+- [x] **FIXED 2026-09-14 — `0002` never asked who holds a privilege on a TABLE.** It checked
+      function, column and schema privileges by principal, and `grant select on basecamp.entries
+      to supabase_auth_admin` committed clean — found while carving out that role's legitimate
+      EXECUTE on the token hook. A table-ACL check with the same shape as the column one now
+      refuses any named principal outside `postgres` / `authenticated` / `service_role`, with no
+      exceptions; PART 12b proves it bites.
 - [ ] **`0002` never checks that nothing *extra* was added.** It verifies that the triggers it
       expects are present; a trigger it does not know about, attached to an audited table, is
       invisible to it. Doing that needs more than an API key but less than full ownership. (A
@@ -427,6 +418,36 @@ checked — that's what makes this section useful six months from now instead of
 > rather than back-dated — a record of what was checked is worth more than a record that matches
 > today's headings.
 
+- **`0002` learned what `0006` changed, and the mutation suite is green again.** `2026-09-14`
+  Since `0006` joined the chain, every re-run of `0002` after it refused — `0006` had replaced
+  the categories SELECT policy, and `0002` insisted on the `0005` predicate. The control case
+  was red, every COMMIT-expecting static case with it, and the three nesting runtime cases
+  failed because `0006` shows an entry only once it is an active app and the viewer a member.
+  Fixed the way `0002` already handles `0004`: a branch on a durable fact, never a set of two
+  acceptable answers. `can_read_basecamp_category` existing means `0006` has run, so the
+  categories and entries policies must name the `0006` gates and a policy put back on the older
+  predicate is refused as a revert; `0006`'s four gate bodies are pinned on the same existence
+  guard as `0005`'s; `supabase_auth_admin` may hold EXECUTE on the hook and USAGE on the schema
+  and nothing else. The runtime stranger now holds a member type, and the three fixtures write
+  an active `app_settings` row.
+
+  **Two more holes found while doing it, both closed.** Nothing in `0002` asked who holds a
+  privilege on a *table* — a grant to Auth's role committed clean — so a table-ACL check with
+  the column check's shape now refuses any named principal outside the three roles. And the
+  policy count was a floor: `0006`'s nine policies gave it enough slack that dropping the audit
+  log's only SELECT policy committed. The policies are now a named, table-qualified set, exactly
+  like the triggers, with `0006`'s nine required on the existence guard.
+
+  **Checked, on PostgreSQL 17.10:** `boundary_mutations.sh` **133/133** static and Editor
+  cases (PART 12b adds nine — the two reverts, three gutted gates, one dropped `0006` policy,
+  and the three edges of the `supabase_auth_admin` carve-out — each proven REFUSED),
+  **30/30** runtime, **7/7** with `0004` under test, exit 0. `0002` re-runs clean on a mirror
+  stopped at `0005` and on one at `0006`. The documented chain `0001`→`0007` applies fresh.
+  `npm run lint && npx tsc --noEmit && npm test` clean (**221 tests**). **Left as designed:**
+  `0002` still refuses after `0007`, because `0007`'s public branding projection is a definer
+  outside `basecamp` — the exact shape the dependency walk exists to catch. The hygiene test
+  records that as intentional and the runbook now says so.
+
 - **The access-token hook: documented, and the fail-open question settled by execution.**
   `2026-09-13` A read-only briefing on `0004`–`0007` found two dashboard steps no migration can
   perform — exposing `basecamp` to the Data API (documented as step 0) and enabling
@@ -457,7 +478,8 @@ checked — that's what makes this section useful six months from now instead of
   `npm run lint && npx tsc --noEmit && npm test` clean (**221 tests**). The `curl`
   discriminator's `42501` branch was confirmed against a live project with the schema exposed.
   **Not checked:** the dashboard toggle itself, and the `PGRST106` branch, which needs a project
-  with the schema not yet exposed.
+  with the schema not yet exposed. The 12 pre-existing failures that run also showed were
+  closed the next day — see the entry above.
 
 - **The account-lifecycle path and category nesting, ported in and reconciled.** `2026-08-27`
   Brought `0004`/`0005`, the three `/api/admin/*` routes, the `admin.ts` facade and the screens over
