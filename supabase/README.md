@@ -15,7 +15,7 @@ below can assert them. Both are Supabase project settings, in this order:
 | When | Where | What | If skipped |
 |---|---|---|---|
 | **Before** `0001` | Dashboard → Integrations → Data API → Settings → **Exposed schemas** | Add `basecamp`. Step 0 below. | PostgREST answers `PGRST106` to every request. The app shows an error while the database looks perfectly healthy. |
-| **After** `0006` | Dashboard → Authentication → **Hooks** | Enable **Customize Access Token (JWT) Claims** → Postgres → `basecamp` / `custom_access_token_hook`. Step 1c below. | The hook `0006` created sits inert. **The catalog is unaffected** — no policy reads its claims, proven in step 4b. **Basecamp SSO token issuance is unprotected**: Supabase issues an OAuth token to any account on the project for any registered client, with no access check. Nothing looks wrong. |
+| **After** `0006` | Dashboard → Authentication → **Hooks** | Enable the **Custom Access Token** hook → Postgres → `basecamp` / `custom_access_token_hook`. Step 1c below. | The hook `0006` created sits inert. **The catalog is unaffected** — no policy reads its claims, proven in step 4b. **Basecamp SSO token issuance is unprotected**: Supabase issues an OAuth token to any account on the project for any registered client, with no access check. Nothing looks wrong. |
 
 The second cannot come first: the dashboard lets you pick the hook only once
 the function exists, and `0006` is what creates it. Step 4b is how you prove
@@ -272,9 +272,15 @@ is the setting, not a bug in the app.
 
 ### 1c. Enable the access-token hook — after `0006`, before any SSO client
 
-Dashboard → **Authentication → Hooks** → **Customize Access Token (JWT)
-Claims** → hook type **Postgres** → schema `basecamp`, function
+Dashboard → **Authentication → Hooks** → **Custom Access Token** → hook type
+**Postgres** → schema `basecamp`, function
 `custom_access_token_hook` → **Enable**.
+
+If you run the Supabase CLI locally, the same setting is
+`[auth.hook.custom_access_token]` in `supabase/config.toml` with
+`enabled = true` and `uri = "pg-functions://postgres/basecamp/custom_access_token_hook"`.
+This repository ships no `config.toml`; a hosted project reads only the
+dashboard.
 
 `0006` creates the function and grants `supabase_auth_admin` the right to run
 it — and that is all a migration can do. Supabase Auth calls a hook only once
@@ -383,7 +389,7 @@ curl -s "$NEXT_PUBLIC_SUPABASE_URL/rest/v1/entries?select=id&limit=1" \
 | `[]` or rows | `anon` has been granted something in `basecamp`. `0002` refuses that on a re-run; find out who granted it. |
 
 **2. The hook is enabled.** Dashboard → Authentication → Hooks must show
-**Customize Access Token (JWT) Claims** as *Enabled*, pointing at
+**Custom Access Token** as *Enabled*, pointing at
 `basecamp.custom_access_token_hook`. If you would rather check from a script —
 say, before every deploy — the Management API returns the same two facts, given
 a personal access token from Account → Access Tokens:

@@ -84,7 +84,7 @@ moment they come up.
       catch, and you should know what kind of thing they are.
 
 - [ ] **Enable the access-token hook — after `0006`, and nowhere else.** Authentication → Hooks →
-      **Customize Access Token (JWT) Claims** → Postgres → `basecamp` / `custom_access_token_hook`
+      **Custom Access Token** → Postgres → `basecamp` / `custom_access_token_hook`
       → Enable. `0006` creates the function and grants Supabase Auth the right to run it; that is
       everything a migration can do, and the dashboard will not offer the function until `0006`
       has created it. **Skipped, nothing looks wrong.** The catalog, grants and roster are
